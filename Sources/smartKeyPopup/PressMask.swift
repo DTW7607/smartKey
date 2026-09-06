@@ -4,12 +4,17 @@ import SwiftUI
 
 final class PressState: ObservableObject {
     @Published var pressed = false
+    @Published var insertionPressed = false
+    @Published var insertionAnimation = false
+    var insertionTiming = InsertionAnimationTiming()
+
+    var maskPressed: Bool { pressed || insertionPressed }
 }
 
 /// 右下角 L 形黑罩：内侧平面，远端为正圆角接负圆角贴边。
 struct PressMaskView: View {
     @ObservedObject var state: PressState
-    @ObservedObject var mask: MaskConfig
+    @ObservedObject var mask: RuntimeConfiguration
 
     var body: some View {
         let pad = mask.shadowPad
@@ -23,7 +28,7 @@ struct PressMaskView: View {
                 negative: mask.negativeRadiusPt,
                 taper: mask.taperLengthPt,
                 cornerSpeed: mask.cornerSpeed,
-                progress: state.pressed ? 1 : 0
+                progress: state.maskPressed ? 1 : 0
             )
             .fill(Color.black)
             .shadow(color: Color.white.opacity(mask.shadowOpacity), radius: mask.shadowRadiusPt)
@@ -31,8 +36,10 @@ struct PressMaskView: View {
         }
         .frame(width: size.width + pad, height: size.height + pad, alignment: .bottomTrailing)
         .animation(
-            .easeOut(duration: (state.pressed ? mask.appearMs : mask.disappearMs) / 1000),
-            value: state.pressed
+            .easeOut(duration: state.insertionAnimation
+                     ? (state.maskPressed ? state.insertionTiming.appear : state.insertionTiming.disappear)
+                     : (state.maskPressed ? mask.appearMs : mask.disappearMs) / 1000),
+            value: state.maskPressed
         )
         .allowsHitTesting(false)
     }

@@ -23,22 +23,27 @@ enum SmartKeyPopupApp {
 final class PopupDelegate: NSObject, NSApplicationDelegate {
     let config = PopupConfiguration()
     let press = PressState()
-    let mask = MaskConfig.load()
+    let mask = RuntimeConfiguration.load()
     let bubbleContent = BubbleContent()
     private let service = SmartKeyService(
         configuration: SmartKeyConfiguration(
-            enabledEvents: [.press, .release, .singleClick, .longPress]
+            emitJackOnStart: true,
+            enabledEvents: [.press, .release, .singleClick, .longPress, .jack]
         )
     )
     private var panel: PopupPanel!
     private var maskPanel: PopupPanel!
     private var maskCancellable: AnyCancellable?
     private var status: NSStatusItem!
-    private var visible = true
-    private var screen: NSScreen?
     private var bubbleHideWork: DispatchWorkItem?
     private var bubbleMotionTimer: Timer?
     private var bubbleShown = false
+    private lazy var setup = DeviceSetupModel(backend: service, timing: mask.setupTiming,
+                                              choiceStore: DeviceChoiceStore())
+    private var setupPanel: PopupPanel!
+    private var setupTimer: Timer?
+    private var insertionReleaseWork: DispatchWorkItem?
+    private var insertionFinishWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = config.window
@@ -62,19 +67,25 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         maskPanel.hasShadow = false
         maskPanel.level = .screenSaver
         maskPanel.contentView = TransparentHostingView(rootView: PressMaskView(state: press, mask: mask))
+        setupPanel = makeOverlay(rect: .zero, style: [.borderless, .nonactivatingPanel], window: window)
+        setupPanel.allowsKey = true
+        setupPanel.ignoresMouseEvents = false
+        setupPanel.level = .floating
+        setupPanel.contentView = TransparentHostingView(rootView: DeviceSetupView(model: setup, configuration: mask))
         maskCancellable = mask.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.layout()
                 self?.applySmartKeyTiming()
+                if let self { self.setup.timing = self.mask.setupTiming }
             }
         }
 
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(
-            systemSymbolName: "camera.fill",
-            accessibilityDescription: "线控弹窗"
+            systemSymbolName: "button.programmable",
+            accessibilityDescription: "智键"
         )
-        status.button?.toolTip = "3.5mm 线控弹窗 · 无焦点、点击穿透"
+        status.button?.toolTip = "智键 · 3.5 mm 线控"
         refreshMenu()
 
         let center = NotificationCenter.default
@@ -91,12 +102,37 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        setupTimer?.invalidate()
+        cancelInsertionAnimation()
         service.stop()
     }
 
     private func startSmartKey() {
+        setup.onStageChange = { [weak self] in
+            guard let self else { return }
+            self.press.pressed = false
+            self.dismissGestureBubble()
+            self.layoutSetup()
+            self.refreshMenu()
+        }
+        setup.onInsertion = { [weak self] in self?.animateInsertion() }
+        service.onJackChange = { [weak self] connected in
+            self?.applyOnMain { delegate in
+                if !connected { delegate.cancelInsertionAnimation() }
+                delegate.setup.jackChanged(connected)
+            }
+        }
+        service.onAudioChange = { [weak self] _ in
+            self?.applyOnMain { delegate in
+                // HAL callbacks are queued; validate against the current route,
+                // not an older snapshot captured before the user's selection.
+                delegate.setup.audioChanged(delegate.service.audio)
+                delegate.layoutSetup()
+            }
+        }
         service.onButton = { [weak self] phase in
             self?.applyOnMain { delegate in
+                guard delegate.setup.acceptsButtons else { return }
                 delegate.press.pressed = phase == .pressed
             }
         }
@@ -105,14 +141,20 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
                 delegate.handleGesture(event)
             }
         }
-        service.onSeizeStatusChange = { [weak self] _ in
+        service.onSeizeStatusChange = { [weak self] status in
             self?.applyOnMain { delegate in
+                delegate.setup.seizeChanged(status)
                 delegate.refreshMenu()
             }
         }
         applySmartKeyTiming()
+        setup.audioChanged(service.audio)
         service.start()
-        service.setRemoteEnabled(true)
+        let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setup.tick() }
+        }
+        setupTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func applySmartKeyTiming() {
@@ -137,7 +179,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleGesture(_ event: SmartKeyGestureEvent) {
-        guard !bubbleShown else { return }
+        guard setup.acceptsButtons, !bubbleShown else { return }
         switch event.gesture {
         case .singleClick:
             bubbleContent.text = "点击事件"
@@ -173,13 +215,27 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshMenu() {
         let menu = NSMenu()
-        menu.addItem(header("线控弹窗 · \(seizeMenuText(service.seizeStatus))"))
-        menu.addItem(.separator())
-        menu.addItem(item(visible ? "隐藏弹窗" : "显示弹窗", #selector(toggleVisible)))
-        menu.addItem(item("移到鼠标所在屏幕", #selector(moveToMouse)))
+        menu.addItem(header("智键 · \(setupMenuText)"))
+        if setup.stage != .disconnected {
+            menu.addItem(item("重新配置设备…", #selector(reconfigureDevice)))
+        }
         menu.addItem(.separator())
         menu.addItem(item("退出", #selector(quit), key: "q"))
         status.menu = menu
+    }
+
+    private var setupMenuText: String {
+        switch setup.stage {
+        case .disconnected: return "等待 3.5 mm 设备"
+        case .choosingType: return "请选择设备类型"
+        case .audioDevice: return "音频设备模式"
+        case .choosingOutput: return setup.error == nil ? "请选择音频输出" : "配置需要处理"
+        case .applying, .applyingAudio: return "正在切换音频输出"
+        case .audioError: return "耳机输出切换失败"
+        case .remoteError: return "线控连接需要处理"
+        case .paused: return "智键已停用"
+        case .activating, .active: return seizeMenuText(service.seizeStatus)
+        }
     }
 
     private func seizeMenuText(_ status: SmartKeySeizeStatus) -> String {
@@ -202,11 +258,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func layout() {
-        let target = screen
-            ?? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-            ?? NSScreen.main
-        screen = target
-        guard let target else { return }
+        guard let target = currentScreen() else { return }
         if bubbleShown {
             panel.setFrameOrigin(bubbleRestOrigin(on: target))
         }
@@ -221,20 +273,70 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             display: true
         )
         maskPanel.contentView?.layer?.contentsScale = target.backingScaleFactor
-        if visible {
-            if bubbleShown {
-                panel.orderFrontRegardless()
-                panel.applyFocusAppearance()
-            }
-            maskPanel.orderFrontRegardless()
-        } else {
-            panel.orderOut(nil)
-            maskPanel.orderOut(nil)
+        if bubbleShown {
+            panel.orderFrontRegardless()
+            panel.applyFocusAppearance()
+        }
+        maskPanel.orderFrontRegardless()
+        layoutSetup()
+    }
+
+    private func layoutSetup() {
+        guard setupPanel != nil else { return }
+        guard setup.isPresented else {
+            setupPanel.orderOut(nil)
+            return
+        }
+        // Layout on the next main-loop turn so SwiftUI has consumed the new stage.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.setup.isPresented, let target = self.currentScreen() else { return }
+            let size = self.setupPanel.contentView?.fittingSize ?? NSSize(width: 504, height: 360)
+            let visibleFrame = target.visibleFrame
+            self.setupPanel.setFrame(NSRect(
+                x: max(visibleFrame.minX, visibleFrame.maxX - size.width - self.mask.setupScreenMarginPt),
+                y: visibleFrame.minY + self.mask.setupScreenMarginPt,
+                width: size.width, height: size.height
+            ), display: true)
+            self.setupPanel.orderFrontRegardless()
         }
     }
 
+    private func animateInsertion() {
+        cancelInsertionAnimation()
+        let timing = mask.insertionAnimation
+        guard timing.duration > 0 else { return }
+        press.insertionTiming = timing
+        press.insertionAnimation = true
+        press.insertionPressed = true
+        maskPanel.orderFrontRegardless()
+        let release = DispatchWorkItem { [weak self] in self?.press.insertionPressed = false }
+        insertionReleaseWork = release
+        DispatchQueue.main.asyncAfter(deadline: .now() + timing.releaseAfter, execute: release)
+        let finish = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.press.insertionAnimation = false
+        }
+        insertionFinishWork = finish
+        DispatchQueue.main.asyncAfter(deadline: .now() + timing.duration, execute: finish)
+    }
+
+    private func cancelInsertionAnimation() {
+        insertionReleaseWork?.cancel()
+        insertionFinishWork?.cancel()
+        press.insertionPressed = false
+        press.insertionAnimation = false
+    }
+
+    private func dismissGestureBubble() {
+        bubbleHideWork?.cancel()
+        bubbleMotionTimer?.invalidate()
+        bubbleMotionTimer = nil
+        panel?.orderOut(nil)
+        bubbleShown = false
+    }
+
     private func showBubble() {
-        guard visible, let screen = currentScreen() else { return }
+        guard let screen = currentScreen() else { return }
         bubbleHideWork?.cancel()
         if !bubbleShown {
             bubbleShown = true
@@ -258,9 +360,17 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func currentScreen() -> NSScreen? {
-        screen
-            ?? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-            ?? NSScreen.main
+        let screens = NSScreen.screens
+        let displays = screens.compactMap { screen -> DisplayPlacement.Display? in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return DisplayPlacement.Display(id: id.uint32Value,
+                builtIn: CGDisplayIsBuiltin(id.uint32Value) != 0,
+                active: CGDisplayIsActive(id.uint32Value) != 0)
+        }
+        let preferred = DisplayPlacement.preferredID(displays, mainID: CGMainDisplayID())
+        return screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == preferred
+        } ?? screens.first
     }
 
     private func bubbleRestOrigin(on screen: NSScreen) -> NSPoint {
@@ -362,29 +472,20 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reapplyFocusAppearance() {
-        guard visible else { return }
         panel.applyFocusAppearance()
     }
 
     @objc private func screensChanged() {
-        if let screen, !NSScreen.screens.contains(screen) {
-            self.screen = NSScreen.main
-        }
+        bubbleMotionTimer?.invalidate()
+        bubbleMotionTimer = nil
+        // Cancel any in-flight animation targeting a disconnected display.
+        dismissGestureBubble()
         layout()
     }
 
-    @objc private func toggleVisible() {
-        visible.toggle()
-        layout()
-        refreshMenu()
-    }
-
-    @objc private func moveToMouse() {
-        screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-            ?? NSScreen.main
-        visible = true
-        layout()
-        refreshMenu()
+    @objc private func reconfigureDevice() {
+        setup.reopen()
+        layoutSetup()
     }
 
     @objc private func quit() {

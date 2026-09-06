@@ -16,6 +16,7 @@ public final class SmartKeyService {
     public var audio: SmartKeyAudioSnapshot { audioGraph.snapshot }
     public var isRemoteEnabled: Bool { remoteWanted }
     public var seizeStatus: SmartKeySeizeStatus { hid.seizeStatus }
+    public var seizeDiagnostic: String? { hid.diagnostic }
     public var isButtonPressed: Bool { recognizer.isButtonPressed }
 
     private let jack = JackWatcher()

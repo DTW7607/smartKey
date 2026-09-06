@@ -19,5 +19,6 @@ let package = Package(
             dependencies: ["SmartKey"],
             path: "Sources/smartKeyPopup"
         ),
+        .testTarget(name: "SmartKeySetupTests", dependencies: ["smartKeyPopup", "SmartKey"]),
     ]
 )
