@@ -1,15 +1,8 @@
 import Foundation
+import SmartKey
 
-struct GestureConfig {
-    var doubleClickMs: Int
-    var longPressMs: Int
-
-    static let `default` = GestureConfig(doubleClickMs: 600, longPressMs: 1300)
-
-    var doubleClickGap: TimeInterval { TimeInterval(doubleClickMs) / 1000 }
-    var longPressDuration: TimeInterval { TimeInterval(longPressMs) / 1000 }
-
-    static func load() -> GestureConfig {
+enum DemoConfig {
+    static func load() -> SmartKeyConfiguration {
         let names = ["smartKey.conf"]
         var candidates: [URL] = []
         candidates.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
@@ -26,19 +19,17 @@ struct GestureConfig {
                 guard seen.insert(path).inserted else { continue }
                 guard FileManager.default.isReadableFile(atPath: path) else { continue }
                 do {
-                    let config = try parse(String(contentsOf: url, encoding: .utf8), defaults: .default)
-                    return config
+                    return try parse(String(contentsOf: url, encoding: .utf8))
                 } catch {
                     continue
                 }
             }
         }
-
-        return GestureConfig.default
+        return .default
     }
 
-    private static func parse(_ text: String, defaults: GestureConfig) throws -> GestureConfig {
-        var config = defaults
+    private static func parse(_ text: String) throws -> SmartKeyConfiguration {
+        var config = SmartKeyConfiguration.default
         for (lineNumber, raw) in text.components(separatedBy: .newlines).enumerated() {
             var line = raw
             if let hash = line.firstIndex(of: "#") {
@@ -50,22 +41,22 @@ struct GestureConfig {
                 $0.trimmingCharacters(in: .whitespaces)
             }
             guard parts.count == 2 else {
-                throw ConfigError.badLine(lineNumber + 1, raw)
+                throw DemoConfigError.badLine(lineNumber + 1, raw)
             }
             guard let value = Int(parts[1]), value > 0 else {
-                throw ConfigError.badValue(parts[0], parts[1])
+                throw DemoConfigError.badValue(parts[0], parts[1])
             }
             switch parts[0] {
             case "doubleClickMs": config.doubleClickMs = value
             case "longPressMs": config.longPressMs = value
-            default: throw ConfigError.unknownKey(parts[0])
+            default: throw DemoConfigError.unknownKey(parts[0])
             }
         }
         return config
     }
 }
 
-enum ConfigError: Error, CustomStringConvertible {
+enum DemoConfigError: Error, CustomStringConvertible {
     case badLine(Int, String)
     case badValue(String, String)
     case unknownKey(String)
