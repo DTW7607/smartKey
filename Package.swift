@@ -7,9 +7,7 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
-        .library(name: "SmartKey", targets: ["SmartKey"]),
-        .executable(name: "smartKeyDemo", targets: ["smartKeyDemo"]),
-        .executable(name: "smartKeyPopup", targets: ["smartKeyPopup"]),
+        .executable(name: "smartKey", targets: ["smartKeyPopup"]),
     ],
     targets: [
         .target(
@@ -17,12 +15,8 @@ let package = Package(
             path: "Sources/SmartKey"
         ),
         .executableTarget(
-            name: "smartKeyDemo",
-            dependencies: ["SmartKey"],
-            path: "Sources/smartKeyDemo"
-        ),
-        .executableTarget(
             name: "smartKeyPopup",
+            dependencies: ["SmartKey"],
             path: "Sources/smartKeyPopup"
         ),
     ]

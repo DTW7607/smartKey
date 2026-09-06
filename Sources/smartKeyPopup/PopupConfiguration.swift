@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// 弹窗 Demo 的全部可配置项。改这里即可，不必翻窗口代码。
+/// 弹窗的全部可配置项。改这里即可，不必翻窗口代码。
 @available(macOS 26.0, *)
 struct PopupConfiguration {
     var content = Content()

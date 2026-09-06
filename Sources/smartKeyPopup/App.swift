@@ -1,12 +1,13 @@
 import AppKit
 import Combine
+import SmartKey
 import SwiftUI
 
 @main
 enum SmartKeyPopupApp {
     static func main() {
         guard #available(macOS 26.0, *) else {
-            fputs("smartKeyPopup 需要 macOS 26 或更高版本\n", stderr)
+            fputs("smartKey 需要 macOS 26 或更高版本\n", stderr)
             exit(1)
         }
         let app = NSApplication.shared
@@ -23,14 +24,18 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     let config = PopupConfiguration()
     let press = PressState()
     let mask = MaskConfig.load()
+    let bubbleContent = BubbleContent()
+    private let service = SmartKeyService(
+        configuration: SmartKeyConfiguration(
+            enabledEvents: [.press, .release, .singleClick, .longPress]
+        )
+    )
     private var panel: PopupPanel!
     private var maskPanel: PopupPanel!
     private var maskCancellable: AnyCancellable?
-    private var hintWindow: NSWindow!
     private var status: NSStatusItem!
     private var visible = true
     private var screen: NSScreen?
-    private var spaceMonitor: Any?
     private var bubbleHideWork: DispatchWorkItem?
     private var bubbleMotionTimer: Timer?
     private var bubbleShown = false
@@ -41,7 +46,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
         panel = makeOverlay(rect: NSRect(origin: .zero, size: size), style: style, window: window)
-        panel.contentView = GlassBubble.make(config: config)
+        panel.contentView = GlassBubble.make(config: config, content: bubbleContent)
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
         panel.alphaValue = 1
         panel.contentView?.wantsLayer = true
@@ -58,41 +63,18 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         maskPanel.level = .screenSaver
         maskPanel.contentView = TransparentHostingView(rootView: PressMaskView(state: press, mask: mask))
         maskCancellable = mask.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.layout() }
-        }
-
-        hintWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 260, height: 52),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        hintWindow.title = "实体键遮罩"
-        hintWindow.isReleasedWhenClosed = false
-        hintWindow.contentView = NSHostingView(rootView:
-            SpaceHintView(state: press)
-                .background(SpaceCatcher(
-                    onDown: { [weak self] in self?.setPressed(true) },
-                    onUp: { [weak self] in self?.setPressed(false) }
-                ))
-        )
-
-        spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-            guard event.keyCode == 49 else { return event }
-            if event.type == .keyDown {
-                if !event.isARepeat { self?.setPressed(true) }
-                return nil
+            DispatchQueue.main.async {
+                self?.layout()
+                self?.applySmartKeyTiming()
             }
-            self?.setPressed(false)
-            return nil
         }
 
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(
             systemSymbolName: "camera.fill",
-            accessibilityDescription: "相机弹窗"
+            accessibilityDescription: "线控弹窗"
         )
-        status.button?.toolTip = "clear glass 弹窗 Demo · 无焦点、点击穿透"
+        status.button?.toolTip = "3.5mm 线控弹窗 · 无焦点、点击穿透"
         refreshMenu()
 
         let center = NotificationCenter.default
@@ -103,12 +85,69 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         center.addObserver(self, selector: #selector(reapplyFocusAppearance),
                            name: NSApplication.didBecomeActiveNotification, object: nil)
         layout()
-        hintWindow.center()
-        hintWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        startSmartKey()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        service.stop()
+    }
+
+    private func startSmartKey() {
+        service.onButton = { [weak self] phase in
+            self?.applyOnMain { delegate in
+                delegate.press.pressed = phase == .pressed
+            }
+        }
+        service.onGesture = { [weak self] event in
+            self?.applyOnMain { delegate in
+                delegate.handleGesture(event)
+            }
+        }
+        service.onSeizeStatusChange = { [weak self] _ in
+            self?.applyOnMain { delegate in
+                delegate.refreshMenu()
+            }
+        }
+        applySmartKeyTiming()
+        service.start()
+        service.setRemoteEnabled(true)
+    }
+
+    private func applySmartKeyTiming() {
+        let doubleMs = max(Int(mask.doubleClickMs.rounded()), 1)
+        let longMs = max(Int(mask.longPressMs.rounded()), 1)
+        var next = service.configuration
+        guard next.doubleClickMs != doubleMs || next.longPressMs != longMs else { return }
+        next.doubleClickMs = doubleMs
+        next.longPressMs = longMs
+        service.configuration = next
+    }
+
+    private func applyOnMain(_ body: @escaping (PopupDelegate) -> Void) {
+        if Thread.isMainThread {
+            body(self)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                body(self)
+            }
+        }
+    }
+
+    private func handleGesture(_ event: SmartKeyGestureEvent) {
+        guard !bubbleShown else { return }
+        switch event.gesture {
+        case .singleClick:
+            bubbleContent.text = "点击事件"
+        case .longPress:
+            bubbleContent.text = "长按事件"
+        case .doubleClick:
+            return
+        }
+        showBubble()
+    }
 
     private func makeOverlay(rect: NSRect, style: NSWindow.StyleMask, window: PopupConfiguration.WindowOptions) -> PopupPanel {
         let overlay = PopupPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
@@ -132,21 +171,24 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         return overlay
     }
 
-    private func setPressed(_ pressed: Bool) {
-        press.pressed = pressed
-        if pressed { showBubble() }
-    }
-
     private func refreshMenu() {
         let menu = NSMenu()
-        menu.addItem(header("clear glass · 无焦点弹窗"))
+        menu.addItem(header("线控弹窗 · \(seizeMenuText(service.seizeStatus))"))
         menu.addItem(.separator())
         menu.addItem(item(visible ? "隐藏弹窗" : "显示弹窗", #selector(toggleVisible)))
         menu.addItem(item("移到鼠标所在屏幕", #selector(moveToMouse)))
-        menu.addItem(item("显示空格测试窗", #selector(showHint)))
         menu.addItem(.separator())
         menu.addItem(item("退出", #selector(quit), key: "q"))
         status.menu = menu
+    }
+
+    private func seizeMenuText(_ status: SmartKeySeizeStatus) -> String {
+        switch status {
+        case .idle: return "HID 未启动"
+        case .waiting: return "等待插孔设备"
+        case .seized: return "已独占线控"
+        case .failed: return "独占失败"
+        }
     }
 
     private func header(_ title: String) -> NSMenuItem {
@@ -345,15 +387,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
     }
 
-    @objc private func showHint() {
-        hintWindow.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
     @objc private func quit() {
         bubbleHideWork?.cancel()
         bubbleMotionTimer?.invalidate()
-        if let spaceMonitor { NSEvent.removeMonitor(spaceMonitor) }
+        service.stop()
         NSApp.terminate(nil)
     }
 }

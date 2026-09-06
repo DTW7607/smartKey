@@ -18,5 +18,9 @@ xcuserdata/
 # Claude Code local
 .claude/
 
+# Vim
+*.swp
+.*.swp
+
 # User settings
 .vscode/

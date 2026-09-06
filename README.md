@@ -1,47 +1,14 @@
 # smartKey
 
-内置 3.5mm 线控后端库：插孔插拔、系统音频设备列表/默认切换、线控 HID 独占与手势。CLI 只作示例。
-
-## 库
-
-```swift
-import SmartKey
-
-let service = SmartKeyService()
-service.onJackChange = { connected in /* 插入 / 拔出 */ }
-service.onAudioChange = { snapshot in /* 设备列表与默认 I/O */ }
-service.onButton = { phase in /* 按下 / 抬起，做动画 */ }
-service.onGesture = { event in /* 单击 / 双击 / 长按，做动作 */ }
-service.start()
-service.setRemoteEnabled(true)
-
-try service.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-try service.setDefaultInput(uid: "BuiltInMicrophoneDevice")
-```
-
-- 只认内置模拟插孔（输出 `BuiltInHeadphoneOutputDevice`，输入 `BuiltInHeadphoneInputDevice` / `BuiltInHeadsetInputDevice`，transport `'bltn'`）。蓝牙 / USB / USB-C 不会当成插孔，也不会被 seize。
-- `setDefault*` 由库写 Core Audio HAL。插上后不自动切走默认设备；`isAnalogJack` 供 GUI 提示勿把插孔当媒体 I/O。
-- 线控 HID：`Transport=Audio` Consumer Control，整机 seize。失败不共享监听，避免按键漏到系统。音量 ± 被挡住，不进系统 OSD，也不回调。
-- 手势超时与事件开关见 `SmartKeyConfiguration`（`doubleClickMs` / `longPressMs` / `enabledEvents`）。
-- 回调在主线程。HID 已在 main 时同步派发。建议从 main 调 `start()` / `stop()` / `setRemoteEnabled` / `setDefault*`。
-
-## 测试 CLI
-
-交互式覆盖全部公开接口。stdin 挂在 main，不挡住 HID。
+独占内置 3.5mm 线控的 macOS 菜单栏程序：点击 / 长按弹出玻璃气泡，按下时右下角出现按压缩罩。需要 macOS 26。
 
 ```bash
-swift run smartKeyDemo
+swift run smartKey
 ```
 
-从仓库根目录运行即可读到 `smartKey.conf`。启动后不自动 `start()`，可先 `status` 再手动开。
+从仓库根目录运行即可读到 `popup.conf`。改完保存即热更新，不必重启。
 
-| 命令 | 接口 |
-|---|---|
-| `start` / `stop` | `start()` / `stop()` |
-| `status` | `isRunning` / `isJackConnected` / `isRemoteEnabled` / `seizeStatus` / `isButtonPressed` / `configuration` / `audio` |
-| `remote on\|off` | `setRemoteEnabled` |
-| `audio` | `audio` 快照 |
-| `out <序号\|uid>` / `in <序号\|uid>` | `setDefaultOutput` / `setDefaultInput` |
-| `double <ms>` / `long <ms>` / `emit-jack on\|off` | `configuration` |
-| `events …` | `enabledEvents` |
-| 线控 / 插拔 / 音频变化 | `onButton` / `onGesture` / `onJackChange` / `onAudioChange` / `onSeizeStatusChange` |
+- 启动即独占插孔 HID（`Transport=Audio` Consumer Control）。键盘 / 蓝牙 / USB 媒体键不会误触发。
+- 默认只认点击和长按。气泡分别显示「点击事件」「长按事件」；气泡彻底消失前忽略新手势。
+- 黑色遮罩只跟按下 / 松开，与气泡是否在场无关。
+- 手势时长见 `popup.conf` 的 `doubleClickMs` / `longPressMs`。

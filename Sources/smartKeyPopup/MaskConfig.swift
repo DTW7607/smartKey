@@ -21,6 +21,8 @@ final class MaskConfig: ObservableObject {
     @Published var bubbleDisappearMs: CGFloat = 220
     @Published var bubbleEndX: CGFloat = 12
     @Published var bubbleEndY: CGFloat = 12
+    @Published var doubleClickMs: CGFloat = 450
+    @Published var longPressMs: CGFloat = 600
 
     var shadowPad: CGFloat { shadowRadiusPt * 2 + 8 }
 
@@ -76,6 +78,7 @@ final class MaskConfig: ObservableObject {
         var appear = appearMs, disappear = disappearMs, corner = cornerSpeed
         var bubbleHold = bubbleHoldMs, bubbleAppear = bubbleAppearMs, bubbleDisappear = bubbleDisappearMs
         var endX = bubbleEndX, endY = bubbleEndY
+        var doubleClick = doubleClickMs, longPress = longPressMs
         for raw in text.components(separatedBy: .newlines) {
             var line = raw
             if let hash = line.firstIndex(of: "#") { line = String(line[..<hash]) }
@@ -104,6 +107,8 @@ final class MaskConfig: ObservableObject {
             case "bubbleDisappearMs": bubbleDisappear = CGFloat(value)
             case "bubbleEndX": endX = CGFloat(value)
             case "bubbleEndY": endY = CGFloat(value)
+            case "doubleClickMs": doubleClick = CGFloat(value)
+            case "longPressMs": longPress = CGFloat(value)
             default: break
             }
         }
@@ -125,6 +130,8 @@ final class MaskConfig: ObservableObject {
         bubbleDisappearMs = bubbleDisappear
         bubbleEndX = endX
         bubbleEndY = endY
+        if doubleClick > 0 { doubleClickMs = doubleClick }
+        if longPress > 0 { longPressMs = longPress }
     }
 
     private func watch(_ url: URL) {

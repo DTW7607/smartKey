@@ -3,8 +3,8 @@ import SwiftUI
 
 @available(macOS 26.0, *)
 enum GlassBubble {
-    static func make(config: PopupConfiguration) -> NSView {
-        let host = TransparentHostingView(rootView: BubbleLabel(config: config))
+    static func make(config: PopupConfiguration, content: BubbleContent) -> NSView {
+        let host = TransparentHostingView(rootView: BubbleLabel(config: config, content: content))
         let inner = NSSize(
             width: config.layout.panelSize.width - config.layout.outerPadding * 2,
             height: config.layout.panelSize.height - config.layout.outerPadding * 2
