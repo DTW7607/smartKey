@@ -1,17 +1,36 @@
 import Foundation
 import IOKit.hid
 
+enum PlayPauseGesture {
+    case pending
+    case single
+    case double
+    case longPress
+}
+
 /// 独占内置 3.5mm 线控 HID（AppleCS42L84Mikey / Transport=Audio）。
 /// seize 成功后，播放/音量都不会进 WindowServer；失败则不启用按键，避免共享监听泄漏。
 final class PlayPauseWatcher {
     private let manager: IOHIDManager
     private var seized: [IOHIDDevice] = []
-    private var count = 0
-    var onPress: ((Int) -> Void)?
+    var onGesture: ((PlayPauseGesture, Int) -> Void)?
+    private let config: GestureConfig
+
+    private var isDown = false
+    private var longPressFired = false
+    private var awaitingSecondClick = false
+    private var ignoreUpAfterDouble = false
+    private var longPressWork: DispatchWorkItem?
+    private var singleClickWork: DispatchWorkItem?
+    private var pendingCount = 0
+    private var singleCount = 0
+    private var doubleCount = 0
+    private var longCount = 0
 
     private static let seizeOptions = IOOptionBits(kIOHIDOptionsTypeSeizeDevice)
 
-    init() {
+    init(config: GestureConfig) {
+        self.config = config
         manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     }
 
@@ -33,29 +52,20 @@ final class PlayPauseWatcher {
             CFRunLoopMode.defaultMode.rawValue
         )
 
-        let open = IOHIDManagerOpen(manager, Self.seizeOptions)
-        if open != kIOReturnSuccess {
-            print("[hid] IOHIDManagerOpen(seize) 失败: \(Self.ioReturnHex(open))")
-            print("[hid] 不启用共享监听，避免按键泄漏到系统")
-        }
+        _ = IOHIDManagerOpen(manager, Self.seizeOptions)
     }
 
     private func handle(device: IOHIDDevice, added: Bool) {
-        let product = Self.stringProperty(device, kIOHIDProductKey) ?? "?"
-        let transport = Self.stringProperty(device, kIOHIDTransportKey) ?? "?"
         if added {
             let kr = IOHIDDeviceOpen(device, Self.seizeOptions)
             if kr == kIOReturnSuccess {
                 if !contains(device) { seized.append(device) }
-                print("[hid] 已独占 \(product) transport=\(transport) — 系统收不到此设备按键")
             } else {
-                print("[hid] 独占失败 \(product) \(Self.ioReturnHex(kr)) — 按键不启用（防止泄漏）")
                 IOHIDDeviceClose(device, 0)
             }
         } else {
             remove(device)
             IOHIDDeviceClose(device, 0)
-            print("[hid] 已释放 \(product)")
         }
     }
 
@@ -67,9 +77,73 @@ final class PlayPauseWatcher {
         let page = Int(IOHIDElementGetUsagePage(element))
         let usage = Int(IOHIDElementGetUsage(element))
         guard page == 0x0C, usage == 0xCD else { return }
-        guard IOHIDValueGetIntegerValue(value) != 0 else { return }
-        count += 1
-        onPress?(count)
+        let pressed = IOHIDValueGetIntegerValue(value) != 0
+        if pressed { handleDown() } else { handleUp() }
+    }
+
+    private func handleDown() {
+        isDown = true
+        if awaitingSecondClick {
+            cancel(&singleClickWork)
+            cancel(&longPressWork)
+            awaitingSecondClick = false
+            ignoreUpAfterDouble = true
+            longPressFired = false
+            doubleCount += 1
+            onGesture?(.double, doubleCount)
+            return
+        }
+
+        longPressFired = false
+        ignoreUpAfterDouble = false
+        cancel(&longPressWork)
+        pendingCount += 1
+        onGesture?(.pending, pendingCount)
+        let work = DispatchWorkItem { [weak self] in
+            self?.fireLongPress()
+        }
+        longPressWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + config.longPressDuration, execute: work)
+    }
+
+    private func handleUp() {
+        isDown = false
+        cancel(&longPressWork)
+        if ignoreUpAfterDouble {
+            ignoreUpAfterDouble = false
+            return
+        }
+        if longPressFired {
+            longPressFired = false
+            return
+        }
+        awaitingSecondClick = true
+        let work = DispatchWorkItem { [weak self] in
+            self?.fireSingle()
+        }
+        singleClickWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + config.doubleClickGap, execute: work)
+    }
+
+    private func fireSingle() {
+        awaitingSecondClick = false
+        singleCount += 1
+        onGesture?(.single, singleCount)
+    }
+
+    private func fireLongPress() {
+        guard isDown, !longPressFired else { return }
+        longPressFired = true
+        awaitingSecondClick = false
+        ignoreUpAfterDouble = false
+        cancel(&singleClickWork)
+        longCount += 1
+        onGesture?(.longPress, longCount)
+    }
+
+    private func cancel(_ work: inout DispatchWorkItem?) {
+        work?.cancel()
+        work = nil
     }
 
     private func contains(_ device: IOHIDDevice) -> Bool {
@@ -96,14 +170,5 @@ final class PlayPauseWatcher {
         guard let context else { return }
         Unmanaged<PlayPauseWatcher>.fromOpaque(context).takeUnretainedValue()
             .handle(value: value)
-    }
-
-    private static func stringProperty(_ device: IOHIDDevice, _ key: String) -> String? {
-        guard let raw = IOHIDDeviceGetProperty(device, key as CFString) else { return nil }
-        return (raw as? String) ?? "\(raw)"
-    }
-
-    private static func ioReturnHex(_ value: IOReturn) -> String {
-        String(format: "0x%08X", UInt32(bitPattern: value))
     }
 }

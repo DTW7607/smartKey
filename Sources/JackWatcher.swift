@@ -43,21 +43,16 @@ final class JackWatcher {
         AudioObjectAddPropertyListenerBlock(system, &dOut, queue) { [weak self] _, _ in
             self?.emit(initial: false)
         }
-        print("[jack] HAL 事件: Devices，锁定 UID=BuiltInHeadphoneOutputDevice")
     }
 
     private func listenCodec() {
         codec = Self.findCodec()
-        guard codec != 0 else {
-            print("[jack] 无 codec 节点，仅用 HAL")
-            return
-        }
-        let cls = Self.className(codec) ?? "?"
+        guard codec != 0 else { return }
         let port = IONotificationPortCreate(kIOMainPortDefault)
         notifyPort = port
         IONotificationPortSetDispatchQueue(port, queue)
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let kr = IOServiceAddInterestNotification(
+        _ = IOServiceAddInterestNotification(
             port,
             codec,
             kIOGeneralInterest,
@@ -65,11 +60,6 @@ final class JackWatcher {
             context,
             &interest
         )
-        if kr == KERN_SUCCESS {
-            print("[jack] IOKit interest: \(cls)")
-        } else {
-            print("[jack] IOKit interest 失败 \(kr)，仅用 HAL")
-        }
     }
 
     private static let interestCallback: IOServiceInterestCallback = { context, _, messageType, _ in
@@ -84,12 +74,10 @@ final class JackWatcher {
         let connected = Self.analogJackPresent()
         if initial {
             lastConnected = connected
-            print("[jack] 初始状态: \(connected ? "已插入" : "未插入")")
             return
         }
         guard connected != lastConnected else { return }
         lastConnected = connected
-        print("[jack] \(connected ? "插入" : "拔出")")
         onChange?(connected)
     }
 
@@ -169,12 +157,5 @@ final class JackWatcher {
             if service != 0 { return service }
         }
         return 0
-    }
-
-    private static func className(_ service: io_object_t) -> String? {
-        let buf = UnsafeMutablePointer<CChar>.allocate(capacity: 128)
-        defer { buf.deallocate() }
-        guard IOObjectGetClass(service, buf) == KERN_SUCCESS else { return nil }
-        return String(cString: buf)
     }
 }

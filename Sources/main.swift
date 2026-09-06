@@ -1,8 +1,6 @@
 import Foundation
 
-print("smartKey demo 启动")
-print("独占内置 3.5mm 线控 Play/Pause；未独占成功则不处理按键。")
-print("Ctrl+C 退出\n")
+let config = GestureConfig.load()
 
 let jack = JackWatcher()
 jack.onChange = { connected in
@@ -10,9 +8,14 @@ jack.onChange = { connected in
 }
 jack.start()
 
-let playPause = PlayPauseWatcher()
-playPause.onPress = { count in
-    print("播放键 × \(count)")
+let playPause = PlayPauseWatcher(config: config)
+playPause.onGesture = { gesture, count in
+    switch gesture {
+    case .pending: print("按下 × \(count)")
+    case .single: print("单击 × \(count)")
+    case .double: print("双击 × \(count)")
+    case .longPress: print("长按 × \(count)")
+    }
 }
 playPause.start()
 
