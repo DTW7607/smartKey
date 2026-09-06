@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .library(name: "SmartKey", targets: ["SmartKey"]),
         .executable(name: "smartKeyDemo", targets: ["smartKeyDemo"]),
+        .executable(name: "smartKeyPopup", targets: ["smartKeyPopup"]),
     ],
     targets: [
         .target(
@@ -19,6 +20,10 @@ let package = Package(
             name: "smartKeyDemo",
             dependencies: ["SmartKey"],
             path: "Sources/smartKeyDemo"
+        ),
+        .executableTarget(
+            name: "smartKeyPopup",
+            path: "Sources/smartKeyPopup"
         ),
     ]
 )
