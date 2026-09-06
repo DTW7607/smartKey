@@ -19,7 +19,10 @@ enum GlassBubble {
 
         let outer = config.layout.outerPadding
         let root = TransparentView(frame: NSRect(origin: .zero, size: config.layout.panelSize))
-        glass.frame.origin = NSPoint(x: outer, y: outer)
+        glass.frame.origin = NSPoint(
+            x: root.bounds.width - inner.width - outer,
+            y: outer
+        )
         root.addSubview(glass)
         return root
     }

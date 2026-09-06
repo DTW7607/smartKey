@@ -16,6 +16,11 @@ final class MaskConfig: ObservableObject {
     @Published var appearMs: CGFloat = 90
     @Published var disappearMs: CGFloat = 220
     @Published var cornerSpeed: CGFloat = 2.2
+    @Published var bubbleHoldMs: CGFloat = 3000
+    @Published var bubbleAppearMs: CGFloat = 350
+    @Published var bubbleDisappearMs: CGFloat = 220
+    @Published var bubbleEndX: CGFloat = 12
+    @Published var bubbleEndY: CGFloat = 12
 
     var shadowPad: CGFloat { shadowRadiusPt * 2 + 8 }
 
@@ -69,13 +74,17 @@ final class MaskConfig: ObservableObject {
         var positive = positiveRadiusPt, negative = negativeRadiusPt, taper = taperLengthPt
         var shadowR = shadowRadiusPt, shadowA = shadowOpacity
         var appear = appearMs, disappear = disappearMs, corner = cornerSpeed
+        var bubbleHold = bubbleHoldMs, bubbleAppear = bubbleAppearMs, bubbleDisappear = bubbleDisappearMs
+        var endX = bubbleEndX, endY = bubbleEndY
         for raw in text.components(separatedBy: .newlines) {
             var line = raw
             if let hash = line.firstIndex(of: "#") { line = String(line[..<hash]) }
             line = line.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2, let value = Double(parts[1]), value >= 0 else { continue }
+            guard parts.count == 2, let value = Double(parts[1]) else { continue }
+            let allowsNegative = parts[0] == "bubbleEndX" || parts[0] == "bubbleEndY"
+            if value < 0 && !allowsNegative { continue }
             switch parts[0] {
             case "sidePt": side = CGFloat(value)
             case "bottomPt": bottom = CGFloat(value)
@@ -90,6 +99,11 @@ final class MaskConfig: ObservableObject {
             case "appearMs": appear = CGFloat(value)
             case "disappearMs": disappear = CGFloat(value)
             case "cornerSpeed": corner = CGFloat(value)
+            case "bubbleHoldMs": bubbleHold = CGFloat(value)
+            case "bubbleAppearMs": bubbleAppear = CGFloat(value)
+            case "bubbleDisappearMs": bubbleDisappear = CGFloat(value)
+            case "bubbleEndX": endX = CGFloat(value)
+            case "bubbleEndY": endY = CGFloat(value)
             default: break
             }
         }
@@ -106,6 +120,11 @@ final class MaskConfig: ObservableObject {
         appearMs = appear
         disappearMs = disappear
         if corner > 0 { cornerSpeed = corner }
+        bubbleHoldMs = bubbleHold
+        bubbleAppearMs = bubbleAppear
+        bubbleDisappearMs = bubbleDisappear
+        bubbleEndX = endX
+        bubbleEndY = endY
     }
 
     private func watch(_ url: URL) {

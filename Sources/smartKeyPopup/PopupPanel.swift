@@ -8,6 +8,10 @@ final class PopupPanel: NSPanel {
     override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { allowsMain }
 
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
     /// 不成为真正的 key window，只把绘制切到焦点外观。
     func applyFocusAppearance() {
         let acquire = NSSelectorFromString("acquireKeyAppearance")
