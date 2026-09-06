@@ -17,3 +17,6 @@ xcuserdata/
 
 # Claude Code local
 .claude/
+
+# User settings
+.vscode/

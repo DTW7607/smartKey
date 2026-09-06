@@ -53,6 +53,16 @@ final class TransparentHostingView<Content: View>: NSHostingView<Content> {
         layer?.isOpaque = false
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.masksToBounds = false
+        layer?.allowsEdgeAntialiasing = true
+        layer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.contentsScale = scale
+        layer?.allowsEdgeAntialiasing = true
+        layer?.masksToBounds = false
     }
 
     @available(*, unavailable)
