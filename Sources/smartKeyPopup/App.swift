@@ -10,6 +10,10 @@ enum SmartKeyPopupApp {
             fputs("smartKey 需要 macOS 26 或更高版本\n", stderr)
             exit(1)
         }
+        guard SingleInstance.acquire() else {
+            fputs("智键已在运行\n", stderr)
+            exit(0)
+        }
         let app = NSApplication.shared
         let delegate = PopupDelegate()
         app.setActivationPolicy(delegate.config.window.activationPolicy)
@@ -86,6 +90,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "智键"
         )
         status.button?.toolTip = "智键 · 3.5 mm 线控"
+        LoginItem.registerIfNeeded()
         refreshMenu()
 
         let center = NotificationCenter.default
@@ -220,6 +225,11 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item("重新配置设备…", #selector(reconfigureDevice)))
         }
         menu.addItem(.separator())
+        if LoginItem.isAvailable {
+            let login = item("登录时打开", #selector(toggleLoginItem))
+            login.state = LoginItem.isEnabled ? .on : .off
+            menu.addItem(login)
+        }
         menu.addItem(item("退出", #selector(quit), key: "q"))
         status.menu = menu
     }
@@ -486,6 +496,11 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     @objc private func reconfigureDevice() {
         setup.reopen()
         layoutSetup()
+    }
+
+    @objc private func toggleLoginItem(_ sender: NSMenuItem) {
+        LoginItem.setEnabled(sender.state != .on)
+        refreshMenu()
     }
 
     @objc private func quit() {

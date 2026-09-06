@@ -414,6 +414,37 @@ struct DeviceSetupTests {
         #expect(settings.insertionAnimation.releaseAfter == 0.74)
     }
 
+    @Test func runtimeSettingsSerializeRoundTrips() {
+        let original = RuntimeSettings.parse("""
+            sidePt = 7
+            bubbleHoldMs = 2000
+            shadowOpacity = 0.25
+            """)
+        let again = RuntimeSettings.parse(original.serialized())
+        #expect(again == original)
+        #expect(RuntimeSettings.parse(RuntimeSettings().serialized()) == RuntimeSettings())
+    }
+
+    @Test func missingConfIsCreatedFromFactoryThenLoaded() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let factoryDir = dir.appendingPathComponent("factory", isDirectory: true)
+        let userDir = dir.appendingPathComponent("user", isDirectory: true)
+        try FileManager.default.createDirectory(at: factoryDir, withIntermediateDirectories: true)
+        let factory = factoryDir.appendingPathComponent("smartKey.conf")
+        try "sidePt = 9\n".write(to: factory, atomically: true, encoding: .utf8)
+        let user = userDir.appendingPathComponent("smartKey.conf")
+        let url = RuntimeConfiguration.ensureFile(at: user, factory: factory)
+        let config = RuntimeConfiguration.load(url: url)
+        #expect(config.sidePt == 9)
+
+        let missingFactory = dir.appendingPathComponent("nope.conf")
+        let user2 = dir.appendingPathComponent("user2/smartKey.conf")
+        let url2 = RuntimeConfiguration.ensureFile(at: user2, factory: missingFactory)
+        let text = try String(contentsOf: url2, encoding: .utf8)
+        #expect(RuntimeSettings.parse(text) == RuntimeSettings())
+    }
+
     @Test func deviceChoiceStoreRoundTrips() {
         let suite = "smartKey.tests.deviceChoice"
         let defaults = UserDefaults(suiteName: suite)!

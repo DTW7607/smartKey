@@ -14,7 +14,9 @@ protocol DeviceChoiceStoring: AnyObject {
 /// Separate user history from editable timing/layout configuration.
 final class DeviceChoiceStore: DeviceChoiceStoring {
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = UserDefaults(suiteName: "local.smartKey") ?? .standard) {
+        self.defaults = defaults
+    }
 
     var lastChoice: DeviceTypeChoice {
         get {

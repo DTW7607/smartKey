@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-/// User-facing runtime settings. popup.conf uses milliseconds and points.
+/// User-facing runtime settings. smartKey.conf uses milliseconds and points.
 struct RuntimeSettings: Equatable {
     var sidePt: CGFloat = 6
     var bottomPt: CGFloat = 6
@@ -103,11 +103,42 @@ struct RuntimeSettings: Equatable {
         "setupTableHeightPt": Rule(keyPath: \.setupTableHeightPt, range: 60...800),
         "setupCornerRadiusPt": Rule(keyPath: \.setupCornerRadiusPt, range: 0...100),
     ]
+
+    private static let orderedKeys: [String] = [
+        "doubleClickMs", "longPressMs",
+        "insertionMaskDurationMs", "insertionMaskAppearMs", "insertionMaskDisappearMs",
+        "insertionPopupDelayMs", "deviceChoiceTimeoutMs", "audioSwitchTimeoutMs",
+        "hidConnectionNoticeMs",
+        "sidePt", "bottomPt", "cornerRadiusPt", "sideLengthPt", "bottomLengthPt",
+        "positiveRadiusPt", "negativeRadiusPt", "taperLengthPt",
+        "shadowRadiusPt", "shadowOpacity", "appearMs", "disappearMs", "cornerSpeed",
+        "bubbleHoldMs", "bubbleAppearMs", "bubbleDisappearMs", "bubbleEndX", "bubbleEndY",
+        "setupScreenMarginPt", "setupChoiceWidthPt", "setupOutputWidthPt",
+        "setupTableHeightPt", "setupCornerRadiusPt",
+    ]
+
+    func serialized() -> String {
+        let body = Self.orderedKeys.compactMap { key -> String? in
+            guard let rule = Self.rules[key] else { return nil }
+            return "\(key) = \(Self.format(self[keyPath: rule.keyPath]))"
+        }.joined(separator: "\n")
+        return """
+        # smartKey.conf — 改完保存即热更新，不必重启。
+        # 长度默认 pt，时间默认毫秒。
+
+        \(body)
+
+        """
+    }
+
+    private static func format(_ value: CGFloat) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%g", Double(value))
+    }
 }
 
 struct DeviceSetupTiming {
     var choiceTimeout: TimeInterval = 10
-    /// 未传入 conf 时立即弹出，便于测试。App 会使用 `popup.conf` 的延迟。
+    /// 未传入 conf 时立即弹出，便于测试。App 会使用用户 `smartKey.conf` 的延迟。
     var popupDelay: TimeInterval = 0
     var audioSwitchTimeout: TimeInterval = 3
     var hidConnectionNotice: TimeInterval = 5
@@ -140,24 +171,56 @@ final class RuntimeConfiguration: ObservableObject {
         CGSize(width: shapeSize.width + shadowPad, height: shapeSize.height + shadowPad)
     }
 
+    static let fileName = "smartKey.conf"
+    static let supportFolderName = "智键"
+
+    static func userFile(fileManager: FileManager = .default) -> URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(supportFolderName, isDirectory: true)
+            .appendingPathComponent(fileName)
+    }
+
     static func load(url: URL? = nil) -> RuntimeConfiguration {
         let config = RuntimeConfiguration()
-        let url = url ?? findFile()
+        let url = url ?? ensureFile(at: userFile())
         config.reload(url)
         config.watch(url)
         return config
     }
 
-    private static func findFile() -> URL {
-        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let dirs = [cwd, URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent(),
-                    Bundle.main.executableURL?.deletingLastPathComponent()].compactMap { $0 }
-        return dirs.map { $0.appendingPathComponent("popup.conf") }
-            .first { FileManager.default.isReadableFile(atPath: $0.path) }
-            ?? cwd.appendingPathComponent("popup.conf")
+    /// If `url` is missing, copy the factory template or write the current defaults, then return `url`.
+    static func ensureFile(at url: URL, factory: URL? = factoryTemplate(),
+                           fileManager: FileManager = .default) -> URL {
+        if fileManager.isReadableFile(atPath: url.path) { return url }
+        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let factory, fileManager.isReadableFile(atPath: factory.path),
+           let data = try? Data(contentsOf: factory) {
+            try? data.write(to: url)
+        } else {
+            try? RuntimeSettings().serialized().write(to: url, atomically: true, encoding: .utf8)
+        }
+        return url
+    }
+
+    static func factoryTemplate() -> URL? {
+        let name = fileName
+        let candidates = [
+            Bundle.main.url(forResource: "smartKey", withExtension: "conf"),
+            Bundle.main.resourceURL?.appendingPathComponent(name),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(name),
+            URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent(name),
+            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(name),
+        ].compactMap { $0 }
+        return candidates.first { FileManager.default.isReadableFile(atPath: $0.path) }
     }
 
     private func reload(_ url: URL) {
+        if !FileManager.default.isReadableFile(atPath: url.path) {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? values.serialized().write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         let next = RuntimeSettings.parse(text)
         if next != values { values = next }
