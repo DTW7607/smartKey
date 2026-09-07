@@ -47,6 +47,7 @@ cp "$INFO" "$STAGE/Contents/Info.plist"
 cp "$BIN" "$STAGE/Contents/MacOS/smartKey"
 chmod +x "$STAGE/Contents/MacOS/smartKey"
 cp "$CONF" "$STAGE/Contents/Resources/smartKey.conf"
+cp "$ROOT/packaging/AppIcon.icns" "$STAGE/Contents/Resources/AppIcon.icns"
 echo -n "APPL????" > "$STAGE/Contents/PkgInfo"
 
 codesign --force --sign - --timestamp=none "$STAGE"

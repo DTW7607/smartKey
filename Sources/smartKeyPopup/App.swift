@@ -89,9 +89,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(
-            systemSymbolName: "button.programmable",
+            systemSymbolName: "record.circle",
             accessibilityDescription: "智键"
         )
+        status.button?.image?.isTemplate = true
         status.button?.toolTip = "智键 · 3.5 mm 线控"
         LoginItem.registerIfNeeded()
         installStatusMenu()

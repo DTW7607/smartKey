@@ -16,6 +16,8 @@ swift run smartKey
 
 只打包、不安装或启动：`./scripts/build-app.sh`，产物位于 `.build/release-app/smartKey.app`。
 
+App 图标使用黑白圆环与圆点，资源位于 `packaging/AppIcon.icns`，菜单栏使用随系统外观适配的单色符号。修改图标几何后，运行 `swift scripts/generate-app-icon.swift` 重新生成 SVG、1024 像素 PNG 和包含各尺寸的 ICNS，再重新打包或安装。
+
 ## 设置与动作
 
 从菜单栏打开「设置…」（⌘,），左侧为通用、动作绑定、脚本管理。采用原生 macOS 设置窗口和公开 Liquid Glass API，关闭设置后菜单栏程序继续运行。
