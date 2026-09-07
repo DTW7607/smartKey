@@ -9,6 +9,7 @@ protocol DeviceSetupBackend: AnyObject {
     var seizeDiagnostic: String? { get }
     func setDefaultOutput(uid: String) throws
     func setRemoteEnabled(_ enabled: Bool)
+    func setOutputGuardEnabled(_ enabled: Bool)
 }
 
 extension SmartKeyService: DeviceSetupBackend {}
@@ -77,7 +78,7 @@ final class DeviceSetupModel: ObservableObject {
         isWaitingToPresent = inserted && timing.popupDelay > 0
         presentationDeadline = isWaitingToPresent ? now() + timing.popupDelay : nil
         transition(inserted ? .choosingType : .disconnected)
-        backend.setRemoteEnabled(false)
+        disableRemoteAndGuard()
         guard inserted else { return }
         rememberCurrentOutput(backend.audio)
         onInsertion?()
@@ -94,7 +95,7 @@ final class DeviceSetupModel: ObservableObject {
         deadline = nil
         rememberCurrentOutput(backend.audio)
         transition(.applyingAudio)
-        backend.setRemoteEnabled(false)
+        disableRemoteAndGuard()
         guard let jack = backend.audio.outputs.first(where: \.isAnalogJack) else {
             fail("耳机端口已不可用，请检查连接后重试。", stage: .audioError)
             return
@@ -110,7 +111,7 @@ final class DeviceSetupModel: ObservableObject {
         requestedUID = nil
         error = nil
         transition(.paused)
-        backend.setRemoteEnabled(false)
+        disableRemoteAndGuard()
     }
 
     func chooseSmartKey() {
@@ -144,7 +145,7 @@ final class DeviceSetupModel: ObservableObject {
         requestedUID = nil
         error = nil
         transition(.choosingType)
-        backend.setRemoteEnabled(false)
+        disableRemoteAndGuard()
     }
 
     func applyOutput() {
@@ -188,19 +189,31 @@ final class DeviceSetupModel: ObservableObject {
                 activateRemote()
             }
         } else if stage == .active || stage == .activating || stage == .remoteError {
+            if snapshot.isAnalogJackDefaultOutput { return }
             if !outputs.contains(where: { $0.uid == snapshot.defaultOutputUID }) {
-                // Release before restoring the audio route; queued input stays gated.
+                // Non-jack default vanished; HAL did not fall back to the analog jack.
                 transition(.applying)
-                backend.setRemoteEnabled(false)
+                disableRemoteAndGuard()
                 configureSmartKeyOutput()
             }
         }
+    }
+
+    func outputGuardRestoreFailed(_ snapshot: SmartKeyAudioSnapshot) {
+        guard connected, smartKeyWanted else { return }
+        guard stage == .active || stage == .activating || stage == .remoteError else { return }
+        disableRemoteAndGuard()
+        updateDevices(snapshot)
+        automaticallySelectingOutput = false
+        error = "上次使用的音频设备已不可用，请重新选择。"
+        transition(.choosingOutput)
     }
 
     private func activateRemote() {
         error = nil
         deadline = now() + timing.hidConnectionNotice
         transition(.activating)
+        backend.setOutputGuardEnabled(true)
         backend.setRemoteEnabled(true)
         seizeChanged(backend.seizeStatus)
     }
@@ -210,7 +223,7 @@ final class DeviceSetupModel: ObservableObject {
         guard backend.isJackConnected else { jackChanged(false); return }
         deadline = nil
         transition(.applying)
-        backend.setRemoteEnabled(false)
+        disableRemoteAndGuard()
         let snapshot = backend.audio
         if snapshot.outputs.contains(where: { $0.uid == snapshot.defaultOutputUID && !$0.isAnalogJack }) {
             activateRemote()
@@ -314,6 +327,11 @@ final class DeviceSetupModel: ObservableObject {
         requestedUID = nil
         error = message
         transition(stage)
+        disableRemoteAndGuard()
+    }
+
+    private func disableRemoteAndGuard() {
+        backend.setOutputGuardEnabled(false)
         backend.setRemoteEnabled(false)
     }
 

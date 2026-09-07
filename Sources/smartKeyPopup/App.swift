@@ -120,6 +120,12 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
                 delegate.layoutSetup()
             }
         }
+        service.onOutputGuardRestoreFailed = { [weak self] _ in
+            self?.applyOnMain { delegate in
+                delegate.setup.outputGuardRestoreFailed(delegate.service.audio)
+                delegate.layoutSetup()
+            }
+        }
         service.onButton = { [weak self] phase in
             self?.applyOnMain { delegate in
                 guard delegate.setup.acceptsButtons else { return }

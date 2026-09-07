@@ -49,7 +49,7 @@ public struct SmartKeyAudioSnapshot: Equatable, Sendable {
     public let defaultInputUID: String?
 
     public var isAnalogJackDefaultOutput: Bool {
-        defaultOutputUID.map { AnalogJack.isJack($0) } ?? false
+        outputs.contains { $0.uid == defaultOutputUID && $0.isAnalogJack }
     }
 
     public var isAnalogJackDefaultInput: Bool {

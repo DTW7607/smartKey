@@ -21,6 +21,7 @@ private final class FakeBackend: DeviceSetupBackend {
     var seizeDiagnostic: String? = "模拟设备占用"
     var writes: [String] = []
     var remoteRequests: [Bool] = []
+    var guardRequests: [Bool] = []
     var applyImmediately = true
     var throwOnWrite = false
     var seizeImmediately = true
@@ -35,6 +36,9 @@ private final class FakeBackend: DeviceSetupBackend {
     func setRemoteEnabled(_ enabled: Bool) {
         remoteRequests.append(enabled)
         seizeStatus = enabled ? (seizeImmediately ? .seized : .waiting) : .idle
+    }
+    func setOutputGuardEnabled(_ enabled: Bool) {
+        guardRequests.append(enabled)
     }
 }
 
@@ -243,7 +247,39 @@ struct DeviceSetupTests {
         #expect(model.stage == .active)
     }
 
-    @Test func activeOutputLossReleasesHIDAndCancelStopsRetry() {
+    @Test func activeNonJackOutputLossReconfigures() {
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        model.applyOutput()
+        #expect(model.acceptsButtons)
+        backend.devices = [headphones]
+        backend.defaultUID = "speakers"
+        model.audioChanged(backend.audio)
+        #expect(model.stage == .choosingOutput)
+        #expect(backend.remoteRequests.last == false)
+        #expect(backend.guardRequests.last == false)
+    }
+
+    @Test func activeJackStealLeavesHIDToBackendGuard() {
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        model.applyOutput()
+        #expect(model.acceptsButtons)
+        #expect(backend.guardRequests.last == true)
+        let writes = backend.writes
+        backend.defaultUID = "jack"
+        model.audioChanged(backend.audio)
+        #expect(model.stage == .active)
+        #expect(model.acceptsButtons)
+        #expect(backend.remoteRequests.last == true)
+        #expect(backend.writes == writes)
+    }
+
+    @Test func outputGuardFailureShowsPickerAndCancelStopsRetry() {
         let backend = FakeBackend()
         let model = DeviceSetupModel(backend: backend)
         model.jackChanged(true)
@@ -251,9 +287,11 @@ struct DeviceSetupTests {
         model.applyOutput()
         #expect(model.acceptsButtons)
         backend.defaultUID = "jack"
-        model.audioChanged(backend.audio)
+        model.outputGuardRestoreFailed(backend.audio)
         #expect(model.stage == .choosingOutput)
+        #expect(model.error != nil)
         #expect(backend.remoteRequests.last == false)
+        #expect(backend.guardRequests.last == false)
         let writes = backend.writes
         model.cancel()
         model.tick()
@@ -262,6 +300,39 @@ struct DeviceSetupTests {
         model.reopen()
         #expect(model.stage == .choosingType)
         #expect(!model.hasAutomaticChoice)
+    }
+
+    @Test func activateEnablesGuardAndCancelDisablesIt() {
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        model.applyOutput()
+        #expect(backend.guardRequests.last == true)
+        model.cancel()
+        #expect(backend.guardRequests.last == false)
+        model.reopen()
+        model.chooseSmartKey()
+        model.applyOutput()
+        #expect(backend.guardRequests.last == true)
+        backend.isJackConnected = false
+        model.jackChanged(false)
+        #expect(backend.guardRequests.last == false)
+    }
+
+    @Test func chooseAudioDeviceDisablesGuardBeforeSwitchingToJack() {
+        let backend = FakeBackend()
+        backend.defaultUID = "bluetooth"
+        let model = DeviceSetupModel(backend: backend)
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        model.applyOutput()
+        model.reopen()
+        #expect(backend.guardRequests.last == false)
+        model.chooseAudioDevice()
+        #expect(backend.guardRequests.last == false)
+        #expect(backend.writes.last == "jack")
+        #expect(backend.remoteRequests.last == false)
     }
 
     @Test func audioChoiceSwitchesToJackAndConfirmsReadback() {

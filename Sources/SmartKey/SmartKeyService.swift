@@ -6,6 +6,7 @@ public final class SmartKeyService {
     public var onButton: ((SmartKeyButtonPhase) -> Void)?
     public var onGesture: ((SmartKeyGestureEvent) -> Void)?
     public var onSeizeStatusChange: ((SmartKeySeizeStatus) -> Void)?
+    public var onOutputGuardRestoreFailed: ((SmartKeyAudioSnapshot) -> Void)?
 
     public var configuration: SmartKeyConfiguration {
         didSet { recognizer.applyConfiguration(configuration) }
@@ -15,6 +16,8 @@ public final class SmartKeyService {
     public var isJackConnected: Bool { jack.isConnected }
     public var audio: SmartKeyAudioSnapshot { audioGraph.snapshot }
     public var isRemoteEnabled: Bool { remoteWanted }
+    public var isOutputGuardEnabled: Bool { outputGuard.isEnabled }
+    public var lastLegalOutputUID: String? { outputGuard.lastLegalOutputUID }
     public var seizeStatus: SmartKeySeizeStatus { hid.seizeStatus }
     public var seizeDiagnostic: String? { hid.diagnostic }
     public var isButtonPressed: Bool { recognizer.isButtonPressed }
@@ -23,9 +26,11 @@ public final class SmartKeyService {
     private let audioGraph = AudioGraph()
     private let hid = HIDWatcher()
     private let recognizer: GestureRecognizer
+    private let outputGuard = AudioOutputGuard()
 
     private var running = false
     private var remoteWanted = false
+    private var restoreWatchdog: DispatchWorkItem?
 
     public init(configuration: SmartKeyConfiguration = .default) {
         self.configuration = configuration
@@ -33,8 +38,11 @@ public final class SmartKeyService {
         jack.onChange = { [weak self] connected in
             self?.handleJack(connected)
         }
+        outputGuard.setDefault = { [weak self] uid in
+            try self?.audioGraph.setDefaultOutput(uid: uid)
+        }
         audioGraph.onChange = { [weak self] snapshot in
-            self?.emitOnMain { self?.onAudioChange?(snapshot) }
+            self?.emitOnMain { self?.applyOutputGuard(snapshot) }
         }
         hid.onPressed = { [weak self] pressed in
             self?.recognizer.handle(pressed: pressed)
@@ -60,6 +68,7 @@ public final class SmartKeyService {
         running = true
         jack.start()
         audioGraph.start()
+        outputGuard.handle(audioGraph.snapshot)
         if configuration.emitJackOnStart, configuration.enabledEvents.contains(.jack) {
             let connected = jack.isConnected
             emitOnMain { [weak self] in self?.onJackChange?(connected) }
@@ -69,6 +78,9 @@ public final class SmartKeyService {
 
     public func stop() {
         guard running else { return }
+        restoreWatchdog?.cancel()
+        restoreWatchdog = nil
+        outputGuard.setEnabled(false)
         if hid.isRunning { hid.stop() }
         audioGraph.stop()
         jack.stop()
@@ -81,6 +93,16 @@ public final class SmartKeyService {
         remoteWanted = enabled
         guard running else { return }
         applyRemote()
+    }
+
+    public func setOutputGuardEnabled(_ enabled: Bool) {
+        outputGuard.setEnabled(enabled)
+        if !enabled {
+            restoreWatchdog?.cancel()
+            restoreWatchdog = nil
+            return
+        }
+        applyOutputGuard(audioGraph.snapshot)
     }
 
     public func setDefaultOutput(uid: String) throws {
@@ -100,6 +122,31 @@ public final class SmartKeyService {
                 self.recognizer.reset()
             }
         }
+    }
+
+    private func applyOutputGuard(_ snapshot: SmartKeyAudioSnapshot) {
+        switch outputGuard.handle(snapshot) {
+        case .emit:
+            restoreWatchdog?.cancel()
+            restoreWatchdog = nil
+            onAudioChange?(snapshot)
+        case .swallow:
+            if restoreWatchdog == nil { scheduleRestoreWatchdog() }
+        case .failed:
+            restoreWatchdog?.cancel()
+            restoreWatchdog = nil
+            onOutputGuardRestoreFailed?(snapshot)
+        }
+    }
+
+    private func scheduleRestoreWatchdog() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.restoreWatchdog = nil
+            self.applyOutputGuard(self.audioGraph.snapshot)
+        }
+        restoreWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + outputGuard.restoreTimeout, execute: work)
     }
 
     private func handleJack(_ connected: Bool) {
