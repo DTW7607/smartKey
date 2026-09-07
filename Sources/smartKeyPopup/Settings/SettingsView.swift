@@ -170,6 +170,7 @@ struct BindingsSettingsView: View {
                         timing("长按时长", key: "longPressMs", text: $longPressText, defaultValue: 450, range: 300...1500)
                     }.padding(8)
                 }
+                Color.clear.frame(height: 36)
                 if let execution = coordinator.lastExecution { ExecutionResultView(execution: execution) }
             }.padding(28)
         }
@@ -242,7 +243,8 @@ private struct BindingEditor: View {
                 }
                 if type == "keyboard" {
                     TextField("动作名称", text: $name)
-                    Text("\(name.count)/8 个字符").font(.caption).foregroundStyle(name.count > 8 ? .red : .secondary)
+                    Text("\(ActionNames.unitCount(name))/\(ActionNames.maxUnits)")
+                        .font(.caption).foregroundStyle(ActionNames.unitCount(name) > ActionNames.maxUnits ? .red : .secondary)
                     KeyRecorder(keyCode: $keyCode, modifiers: $modifiers, display: $keyDisplay)
                 } else if type == "media" {
                     Picker("操作", selection: $operation) { ForEach(MediaOperation.allCases) { Text($0.title).tag($0) } }

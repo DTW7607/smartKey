@@ -9,10 +9,39 @@ public enum GestureSlot: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 public enum ActionNames {
+    public static let maxUnits = 12
+    public static func unitCount(_ name: String) -> Int {
+        name.reduce(0) { $0 + (isWide($1) ? 2 : 1) }
+    }
+    public static func truncated(_ name: String, maxUnits: Int = maxUnits) -> String {
+        var units = 0
+        var result = ""
+        for character in name {
+            let weight = isWide(character) ? 2 : 1
+            if units + weight > maxUnits { break }
+            result.append(character)
+            units += weight
+        }
+        return result
+    }
     public static func validate(_ name: String) throws {
-        guard name == name.trimmingCharacters(in: .whitespacesAndNewlines), (1...8).contains(name.count),
+        guard name == name.trimmingCharacters(in: .whitespacesAndNewlines),
+              (1...maxUnits).contains(unitCount(name)),
               !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw ActionError("名称须为 1–8 个字符，不能包含换行或首尾空格。")
+            throw ActionError("名称须为 1–12 个字符，中文占 2 个字符，不能包含换行或首尾空格。")
+        }
+    }
+    private static func isWide(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            switch value {
+            case 0x1100...0x11FF, 0x2E80...0xA4CF, 0xA960...0xA97F, 0xAC00...0xD7AF,
+                 0xF900...0xFAFF, 0xFE10...0xFE1F, 0xFE30...0xFE4F, 0xFF00...0xFFEF,
+                 0x1F200...0x1F2FF, 0x20000...0x2FA1F:
+                return true
+            default:
+                return false
+            }
         }
     }
 }

@@ -48,10 +48,12 @@ private final class FakeProvider: ActionProvider {
 struct ActionCoreTests {
     @Test
     func actionNamesCountUnicodeCharactersAndRejectInvalidNames() throws {
-        try ActionNames.validate("中文😀确认状态好")
+        try ActionNames.validate("中文OK")
+        try ActionNames.validate("一二三四五六")
+        try ActionNames.validate("HelloWorld12")
 
         #expect(throws: ActionError.self) {
-            try ActionNames.validate("一二三四五六七八九")
+            try ActionNames.validate("一二三四五六七")
         }
         #expect(throws: ActionError.self) {
             try ActionNames.validate(" 名")

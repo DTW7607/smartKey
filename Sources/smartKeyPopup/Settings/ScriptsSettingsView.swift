@@ -162,7 +162,8 @@ struct ScriptDetailsView: View {
                 GroupBox("脚本信息") {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("名称", text: $draft.name)
-                        Text("\(draft.name.count)/8 个字符，重命名会同步更新动作绑定。").font(.caption).foregroundStyle(draft.name.count > 8 ? .red : .secondary)
+                        Text("\(ActionNames.unitCount(draft.name))/\(ActionNames.maxUnits)")
+                            .font(.caption).foregroundStyle(ActionNames.unitCount(draft.name) > ActionNames.maxUnits ? .red : .secondary)
                         TextField("说明", text: $draft.summary, axis: .vertical).lineLimit(3...5)
                         Text("内容").font(.caption).foregroundStyle(.secondary)
                         TextEditor(text: $preview)
@@ -197,8 +198,10 @@ struct ScriptDetailsView: View {
         .onChange(of: environmentText) { _, _ in scheduleSave() }
         .onDisappear {
             saveTask?.cancel()
-            save()
-            coordinator.scriptDrafts[original.id] = (draft, environmentText)
+            if coordinator.store.document.scripts.contains(where: { $0.id == original.id }) {
+                save()
+                coordinator.scriptDrafts[original.id] = (draft, environmentText)
+            }
         }
     }
     private func loadPreview() {
@@ -217,6 +220,7 @@ struct ScriptDetailsView: View {
         }
     }
     private func save() {
+        guard coordinator.store.document.scripts.contains(where: { $0.id == original.id }) else { return }
         do {
             var next = draft
             next.name = next.name.trimmingCharacters(in: .whitespacesAndNewlines)

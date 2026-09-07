@@ -126,11 +126,13 @@ final class ActionCoordinator: ObservableObject {
     func saveScript(_ script: ScriptRecord) { perform { try store.saveScript(script); refresh() } }
     func moveScripts(from offsets: IndexSet, to destination: Int) { perform { try store.moveScripts(from: offsets, to: destination) } }
     func uniqueName(_ suggested: String) -> String {
-        let base = String(suggested.trimmingCharacters(in: .whitespacesAndNewlines).prefix(8))
-        let candidate = base.isEmpty ? "新脚本" : base
+        let trimmed = suggested.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = ActionNames.truncated(trimmed.isEmpty ? "新脚本" : trimmed)
         var result = candidate; var count = 2
         while store.document.scripts.contains(where: { $0.name.caseInsensitiveCompare(result) == .orderedSame }) {
-            let suffix = String(count); result = String(candidate.prefix(max(1, 8 - suffix.count))) + suffix; count += 1
+            let suffix = String(count)
+            result = ActionNames.truncated(candidate, maxUnits: ActionNames.maxUnits - suffix.count) + suffix
+            count += 1
         }
         return result
     }
