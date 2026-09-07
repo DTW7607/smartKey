@@ -156,10 +156,17 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     private func applySmartKeyTiming() {
         let doubleMs = max(Int(mask.doubleClickMs.rounded()), 1)
         let longMs = max(Int(mask.longPressMs.rounded()), 1)
+        let wantDouble = mask.doubleClickEnabled != 0
         var next = service.configuration
-        guard next.doubleClickMs != doubleMs || next.longPressMs != longMs else { return }
+        let hasDouble = next.enabledEvents.contains(.doubleClick)
+        guard next.doubleClickMs != doubleMs || next.longPressMs != longMs || hasDouble != wantDouble else { return }
         next.doubleClickMs = doubleMs
         next.longPressMs = longMs
+        if wantDouble {
+            next.enabledEvents.insert(.doubleClick)
+        } else {
+            next.enabledEvents.remove(.doubleClick)
+        }
         service.configuration = next
     }
 
@@ -185,7 +192,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         case .longPress:
             text = "长按事件"
         case .doubleClick:
-            return
+            text = "双击事件"
         }
         guard let screen = currentScreen() else { return }
         let hold = max(mask.bubbleHoldMs, 0) / 1000

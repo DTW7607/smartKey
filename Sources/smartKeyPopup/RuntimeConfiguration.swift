@@ -23,6 +23,7 @@ struct RuntimeSettings: Equatable {
     var bubbleRetractCooldownMs: CGFloat = 200
     var bubbleEndX: CGFloat = -30
     var bubbleEndY: CGFloat = 30
+    var doubleClickEnabled: CGFloat = 0
     var doubleClickMs: CGFloat = 450
     var longPressMs: CGFloat = 450
     var deviceChoiceTimeoutMs: CGFloat = 10000
@@ -90,6 +91,7 @@ struct RuntimeSettings: Equatable {
         "bubbleRetractCooldownMs": Rule(keyPath: \.bubbleRetractCooldownMs, range: -86400000...86400000),
         "bubbleEndX": Rule(keyPath: \.bubbleEndX, range: -10000...10000),
         "bubbleEndY": Rule(keyPath: \.bubbleEndY, range: -10000...10000),
+        "doubleClickEnabled": Rule(keyPath: \.doubleClickEnabled, range: 0...1),
         "doubleClickMs": Rule(keyPath: \.doubleClickMs, range: 1...86400000),
         "longPressMs": Rule(keyPath: \.longPressMs, range: 1...86400000),
         "deviceChoiceTimeoutMs": Rule(keyPath: \.deviceChoiceTimeoutMs, range: 0...86400000),
@@ -107,7 +109,7 @@ struct RuntimeSettings: Equatable {
     ]
 
     private static let orderedKeys: [String] = [
-        "doubleClickMs", "longPressMs",
+        "doubleClickEnabled", "doubleClickMs", "longPressMs",
         "insertionMaskDurationMs", "insertionMaskAppearMs", "insertionMaskDisappearMs",
         "insertionPopupDelayMs", "deviceChoiceTimeoutMs", "audioSwitchTimeoutMs",
         "hidConnectionNoticeMs",

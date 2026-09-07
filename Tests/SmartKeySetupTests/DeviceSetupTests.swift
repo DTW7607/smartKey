@@ -477,12 +477,48 @@ struct DeviceSetupTests {
         #expect(settings.insertionPopupDelayMs == 150)
         #expect(settings.setupChoiceWidthPt == 400)
         #expect(settings.doubleClickMs == 450)
+        #expect(settings.doubleClickEnabled == 0)
         #expect(settings.setupTiming.choiceTimeout == 2.5)
         #expect(settings.setupTiming.popupDelay == 0.15)
         #expect(settings.insertionAnimation.duration == 0.9)
         #expect(settings.insertionAnimation.appear == 0.08)
         #expect(settings.insertionAnimation.disappear == 0.16)
         #expect(settings.insertionAnimation.releaseAfter == 0.74)
+    }
+
+    @Test func runtimeSettingsParseDoubleClickEnabled() {
+        #expect(RuntimeSettings().doubleClickEnabled == 0)
+        #expect(RuntimeSettings.parse("doubleClickEnabled = 1").doubleClickEnabled == 1)
+        #expect(RuntimeSettings.parse("doubleClickEnabled = 0").doubleClickEnabled == 0)
+        #expect(RuntimeSettings.parse("doubleClickEnabled = 2").doubleClickEnabled == 0)
+        #expect(RuntimeSettings.parse("doubleClickEnabled = true").doubleClickEnabled == 0)
+    }
+
+    @Test func existingConfMergesDoubleClickEnabledFromFactory() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let factory = dir.appendingPathComponent("factory.conf")
+        let user = dir.appendingPathComponent("user.conf")
+        try """
+            # factory
+            doubleClickEnabled = 0
+            doubleClickMs = 450
+            """.write(to: factory, atomically: true, encoding: .utf8)
+        try """
+            # user
+            doubleClickMs = 300
+            """.write(to: user, atomically: true, encoding: .utf8)
+        let inserted = try String(contentsOf: RuntimeConfiguration.ensureFile(at: user, factory: factory), encoding: .utf8)
+        let insertedSettings = RuntimeSettings.parse(inserted)
+        #expect(insertedSettings.doubleClickEnabled == 0)
+        #expect(insertedSettings.doubleClickMs == 300)
+        #expect(inserted.contains("doubleClickEnabled = 0"))
+
+        try "doubleClickEnabled = 1\n".write(to: user, atomically: true, encoding: .utf8)
+        let kept = try String(contentsOf: RuntimeConfiguration.ensureFile(at: user, factory: factory), encoding: .utf8)
+        #expect(RuntimeSettings.parse(kept).doubleClickEnabled == 1)
+        #expect(kept.contains("doubleClickEnabled = 1"))
     }
 
     @Test func runtimeSettingsSerializeRoundTrips() {
