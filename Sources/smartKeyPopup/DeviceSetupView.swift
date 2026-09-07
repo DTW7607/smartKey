@@ -27,10 +27,12 @@ struct DeviceSetupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                Image(systemName: model.stage == .choosingType || audioMode ? "headphones" : "button.programmable")
-                    .font(.system(size: 25, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 38)
+                if model.stage != .choosingType {
+                    Image(systemName: audioMode ? "headphones" : "button.programmable")
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38)
+                }
                 VStack(alignment: .leading, spacing: 5) {
                     Text(title).font(.system(size: 16, weight: .semibold))
                     if model.stage == .choosingType || choosingOutput {
@@ -46,9 +48,9 @@ struct DeviceSetupView: View {
 
             if model.stage == .choosingType {
                 HStack(spacing: 12) {
-                    typeChoice(.audioDevice, title: "音频设备", subtitle: "耳机或扬声器",
+                    typeChoice(.audioDevice, title: "音频设备",
                                symbol: "headphones", action: model.chooseAudioDevice)
-                    typeChoice(.smartKey, title: "智键", subtitle: "独占线控按键",
+                    typeChoice(.smartKey, title: "智键",
                                symbol: "button.programmable", action: model.chooseSmartKey)
                 }
             } else {
@@ -105,23 +107,22 @@ struct DeviceSetupView: View {
     }
 
     @ViewBuilder
-    private func typeChoice(_ choice: DeviceTypeChoice, title: String, subtitle: String,
+    private func typeChoice(_ choice: DeviceTypeChoice, title: String,
                             symbol: String, action: @escaping () -> Void) -> some View {
         if model.preferredChoice == choice {
-            deviceChoice(title, subtitle: subtitle, symbol: symbol, preferred: true, action: action)
+            deviceChoice(title, symbol: symbol, preferred: true, action: action)
                 .keyboardShortcut(.defaultAction)
         } else {
-            deviceChoice(title, subtitle: subtitle, symbol: symbol, action: action)
+            deviceChoice(title, symbol: symbol, action: action)
         }
     }
 
-    private func deviceChoice(_ title: String, subtitle: String, symbol: String,
+    private func deviceChoice(_ title: String, symbol: String,
                               preferred: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: symbol).font(.system(size: 23))
                 Text(title).font(.system(size: 14, weight: .semibold))
-                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
@@ -132,7 +133,7 @@ struct DeviceSetupView: View {
             .overlay(alignment: .topTrailing) {
                 if preferred && model.hasAutomaticChoice {
                     Text("\(model.remainingSeconds)")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .monospacedDigit().foregroundStyle(Color.accentColor)
                         .padding(8)
                         .accessibilityLabel("\(model.remainingSeconds) 秒后选择\(title)")

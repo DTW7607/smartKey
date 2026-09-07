@@ -28,20 +28,17 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     let config = PopupConfiguration()
     let press = PressState()
     let mask = RuntimeConfiguration.load()
-    let bubbleContent = BubbleContent()
     private let service = SmartKeyService(
         configuration: SmartKeyConfiguration(
             emitJackOnStart: true,
             enabledEvents: [.press, .release, .singleClick, .longPress, .jack]
         )
     )
-    private var panel: PopupPanel!
     private var maskPanel: PopupPanel!
     private var maskCancellable: AnyCancellable?
     private var status: NSStatusItem!
-    private var bubbleHideWork: DispatchWorkItem?
-    private var bubbleMotionTimer: Timer?
-    private var bubbleShown = false
+    private var bubbles: [GestureBubble] = []
+    private var nextGestureAt: TimeInterval = 0
     private lazy var setup = DeviceSetupModel(backend: service, timing: mask.setupTiming,
                                               choiceStore: DeviceChoiceStore())
     private var setupPanel: PopupPanel!
@@ -51,21 +48,8 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = config.window
-        let size = config.layout.panelSize
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
-        panel = makeOverlay(rect: NSRect(origin: .zero, size: size), style: style, window: window)
-        panel.contentView = GlassBubble.make(config: config, content: bubbleContent)
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
-        panel.alphaValue = 1
-        panel.contentView?.wantsLayer = true
-        if let view = panel.contentView, let layer = view.layer {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.position = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-            CATransaction.commit()
-        }
 
         maskPanel = makeOverlay(rect: NSRect(origin: .zero, size: mask.overlaySize), style: style, window: window)
         maskPanel.hasShadow = false
@@ -91,6 +75,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         )
         status.button?.toolTip = "智键 · 3.5 mm 线控"
         LoginItem.registerIfNeeded()
+        installStatusMenu()
         refreshMenu()
 
         let center = NotificationCenter.default
@@ -184,16 +169,34 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleGesture(_ event: SmartKeyGestureEvent) {
-        guard setup.acceptsButtons, !bubbleShown else { return }
+        guard setup.acceptsButtons else { return }
+        let now = CACurrentMediaTime()
+        guard now >= nextGestureAt else { return }
+        let text: String
         switch event.gesture {
         case .singleClick:
-            bubbleContent.text = "点击事件"
+            text = "点击事件"
         case .longPress:
-            bubbleContent.text = "长按事件"
+            text = "长按事件"
         case .doubleClick:
             return
         }
-        showBubble()
+        guard let screen = currentScreen() else { return }
+        let hold = max(mask.bubbleHoldMs, 0) / 1000
+        let disappear = max(mask.bubbleDisappearMs, 1) / 1000
+        nextGestureAt = now + hold + disappear + mask.bubbleRetractCooldownMs / 1000
+        let window = config.window
+        var style: NSWindow.StyleMask = [.borderless]
+        if window.nonactivating { style.insert(.nonactivatingPanel) }
+        let overlay = makeOverlay(
+            rect: NSRect(origin: .zero, size: config.layout.panelSize),
+            style: style, window: window)
+        let bubble = GestureBubble(panel: overlay, config: config, mask: mask, text: text)
+        bubbles.append(bubble)
+        bubble.start(on: screen) { [weak self, weak bubble] in
+            guard let self, let bubble else { return }
+            self.bubbles.removeAll { $0 === bubble }
+        }
     }
 
     private func makeOverlay(rect: NSRect, style: NSWindow.StyleMask, window: PopupConfiguration.WindowOptions) -> PopupPanel {
@@ -218,20 +221,48 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         return overlay
     }
 
-    private func refreshMenu() {
+    private enum MenuTag: Int {
+        case header = 1
+        case reconfigure = 2
+        case login = 3
+    }
+
+    private func installStatusMenu() {
         let menu = NSMenu()
-        menu.addItem(header("智键 · \(setupMenuText)"))
-        if setup.stage != .disconnected {
-            menu.addItem(item("重新配置设备…", #selector(reconfigureDevice)))
-        }
+        menu.autoenablesItems = false
+        let header = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        header.tag = MenuTag.header.rawValue
+        menu.addItem(header)
+        let reconfigure = item("重新配置设备…", #selector(reconfigureDevice))
+        reconfigure.tag = MenuTag.reconfigure.rawValue
+        menu.addItem(reconfigure)
         menu.addItem(.separator())
         if LoginItem.isAvailable {
             let login = item("登录时打开", #selector(toggleLoginItem))
-            login.state = LoginItem.isEnabled ? .on : .off
+            login.tag = MenuTag.login.rawValue
             menu.addItem(login)
         }
         menu.addItem(item("退出", #selector(quit), key: "q"))
         status.menu = menu
+    }
+
+    private func refreshMenu() {
+        guard let menu = status.menu else { return }
+        if let header = menu.item(withTag: MenuTag.header.rawValue) {
+            header.title = "智键 · \(setupMenuText)"
+            menu.itemChanged(header)
+        }
+        if let reconfigure = menu.item(withTag: MenuTag.reconfigure.rawValue) {
+            let connected = setup.stage != .disconnected
+            reconfigure.isHidden = !connected
+            reconfigure.isEnabled = connected
+            menu.itemChanged(reconfigure)
+        }
+        if let login = menu.item(withTag: MenuTag.login.rawValue) {
+            login.state = LoginItem.isEnabled ? .on : .off
+            menu.itemChanged(login)
+        }
     }
 
     private var setupMenuText: String {
@@ -252,13 +283,9 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         switch status {
         case .idle: return "HID 未启动"
         case .waiting: return "等待插孔设备"
-        case .seized: return "已独占线控"
+        case .seized: return "已启用"
         case .failed: return "独占失败"
         }
-    }
-
-    private func header(_ title: String) -> NSMenuItem {
-        NSMenuItem(title: title, action: nil, keyEquivalent: "")
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -269,9 +296,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func layout() {
         guard let target = currentScreen() else { return }
-        if bubbleShown {
-            panel.setFrameOrigin(bubbleRestOrigin(on: target))
-        }
         let maskSize = mask.overlaySize
         maskPanel.setFrame(
             NSRect(
@@ -283,10 +307,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             display: true
         )
         maskPanel.contentView?.layer?.contentsScale = target.backingScaleFactor
-        if bubbleShown {
-            panel.orderFrontRegardless()
-            panel.applyFocusAppearance()
-        }
         maskPanel.orderFrontRegardless()
         layoutSetup()
     }
@@ -338,35 +358,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func dismissGestureBubble() {
-        bubbleHideWork?.cancel()
-        bubbleMotionTimer?.invalidate()
-        bubbleMotionTimer = nil
-        panel?.orderOut(nil)
-        bubbleShown = false
-    }
-
-    private func showBubble() {
-        guard let screen = currentScreen() else { return }
-        bubbleHideWork?.cancel()
-        if !bubbleShown {
-            bubbleShown = true
-            animateBubble(appearing: true, on: screen)
-        }
-        let work = DispatchWorkItem { [weak self] in
-            self?.hideBubble()
-        }
-        bubbleHideWork = work
-        let hold = max(mask.bubbleHoldMs, 0) / 1000
-        DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
-    }
-
-    private func hideBubble() {
-        guard bubbleShown, let screen = currentScreen() else { return }
-        animateBubble(appearing: false, on: screen) { [weak self] in
-            guard let self else { return }
-            self.panel.orderOut(nil)
-            self.bubbleShown = false
-        }
+        nextGestureAt = 0
+        let live = bubbles
+        bubbles.removeAll()
+        live.forEach { $0.dismiss() }
     }
 
     private func currentScreen() -> NSScreen? {
@@ -383,112 +378,11 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         } ?? screens.first
     }
 
-    private func bubbleRestOrigin(on screen: NSScreen) -> NSPoint {
-        let (dockRight, dockTop) = dockRightAndTop(on: screen)
-        let pad = config.layout.outerPadding
-        let size = panel.frame.size
-        return NSPoint(
-            x: dockRight + mask.bubbleEndX - (size.width - pad),
-            y: dockTop + mask.bubbleEndY - pad
-        )
-    }
-
-    /// Dock 右缘与上缘。底栏：右缘=屏幕右，上缘=visibleFrame.minY。
-    private func dockRightAndTop(on screen: NSScreen) -> (CGFloat, CGFloat) {
-        let frame = screen.frame
-        let vis = screen.visibleFrame
-        let right: CGFloat
-        if vis.maxX < frame.maxX - 0.5 {
-            right = frame.maxX
-        } else if vis.minX > frame.minX + 0.5 {
-            right = vis.minX
-        } else {
-            right = frame.maxX
-        }
-        let top = vis.minY
-        return (right, top)
-    }
-
-    private func bubbleStartOrigin(on screen: NSScreen) -> NSPoint {
-        let size = panel.frame.size
-        return NSPoint(x: screen.frame.maxX, y: screen.frame.minY - size.height)
-    }
-
-    private func animateBubble(appearing: Bool, on screen: NSScreen, completion: (() -> Void)? = nil) {
-        let view = panel.contentView
-        view?.wantsLayer = true
-        let layer = view?.layer
-        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let duration = max((appearing ? mask.bubbleAppearMs : mask.bubbleDisappearMs), 1) / 1000
-        let fromOrigin = appearing ? bubbleStartOrigin(on: screen) : panel.frame.origin
-        let toOrigin = appearing ? bubbleRestOrigin(on: screen) : bubbleStartOrigin(on: screen)
-        let fromScale: CGFloat = appearing ? 0.45 : 1
-        let toScale: CGFloat = appearing ? 1 : 0.45
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if appearing {
-            panel.setFrame(NSRect(origin: fromOrigin, size: panel.frame.size), display: true)
-            layer?.transform = CATransform3DMakeScale(fromScale, fromScale, 1)
-            layer?.opacity = 1
-            panel.alphaValue = 1
-        }
-        CATransaction.commit()
-        if appearing {
-            panel.orderFrontRegardless()
-            panel.applyFocusAppearance()
-        }
-
-        bubbleMotionTimer?.invalidate()
-        let t0 = CACurrentMediaTime()
-        let dx = toOrigin.x - fromOrigin.x
-        let dy = toOrigin.y - fromOrigin.y
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else {
-                    timer.invalidate()
-                    return
-                }
-                let u = min(1, (CACurrentMediaTime() - t0) / duration)
-                let e = appearing ? Self.easeOut(u) : Self.easeIn(u)
-                self.panel.setFrameOrigin(NSPoint(x: fromOrigin.x + dx * e, y: fromOrigin.y + dy * e))
-                if !reduce, let layer = self.panel.contentView?.layer {
-                    let s = fromScale + (toScale - fromScale) * e
-                    layer.transform = CATransform3DMakeScale(s, s, 1)
-                }
-                if u >= 1 {
-                    timer.invalidate()
-                    self.bubbleMotionTimer = nil
-                    self.panel.setFrameOrigin(toOrigin)
-                    if !reduce {
-                        self.panel.contentView?.layer?.transform = CATransform3DMakeScale(toScale, toScale, 1)
-                    }
-                    completion?()
-                }
-            }
-        }
-        bubbleMotionTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private nonisolated static func easeOut(_ t: Double) -> CGFloat {
-        let x = CGFloat(min(max(t, 0), 1))
-        return 1 - pow(1 - x, 3)
-    }
-
-    private nonisolated static func easeIn(_ t: Double) -> CGFloat {
-        let x = CGFloat(min(max(t, 0), 1))
-        return x * x * x
-    }
-
     @objc private func reapplyFocusAppearance() {
-        panel.applyFocusAppearance()
+        bubbles.forEach { $0.applyFocusAppearance() }
     }
 
     @objc private func screensChanged() {
-        bubbleMotionTimer?.invalidate()
-        bubbleMotionTimer = nil
-        // Cancel any in-flight animation targeting a disconnected display.
         dismissGestureBubble()
         layout()
     }
@@ -504,8 +398,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        bubbleHideWork?.cancel()
-        bubbleMotionTimer?.invalidate()
+        dismissGestureBubble()
         service.stop()
         NSApp.terminate(nil)
     }

@@ -14,7 +14,7 @@ swift run smartKey
 ./scripts/install-app.sh
 ```
 
-布局与手势配置在 `~/Library/Application Support/智键/smartKey.conf`。首次启动若该文件不存在，会把当前出厂配置写进去；之后改完保存即热更新，不必重启。仓库根目录的 `smartKey.conf` 只作出厂模板。
+布局与手势配置在 `~/Library/Application Support/smartKey/smartKey.conf`。首次启动若该文件不存在，会把当前出厂配置写进去；之后启动会把模板里的新键和注释合并进去，已有取值不覆盖。改完保存即热更新，不必重启。仓库根目录的 `smartKey.conf` 只作出厂模板。
 
 - 启动检查已插入的内置 3.5mm 设备，同时监听后续插拔。检测到插入时，右下角先播放黑色遮罩动画，再延迟显示设备类型选择气泡；时长见 `insertionMaskDurationMs` / `insertionPopupDelayMs`。
 - 每次启动检测到设备或重新插入设备都弹窗，不提供默认识别或隐藏设置。焦点落在上次确认的选项上（首次默认为智键，跨启动持久化），右上角仅显示倒计时数字；超时则按当前焦点项继续。超时见 `deviceChoiceTimeoutMs`。
@@ -28,10 +28,10 @@ swift run smartKey
 - 所有提示和遮罩优先显示在可用的内置屏幕，即使外接屏幕被设为主显示器。内置屏幕不可用时退回 `CGMainDisplayID()` 对应的主显示器，不跟随鼠标或前台窗口。
 - 配置窗口使用固定的系统背景色，与原生列表和按钮保持一致，不依赖切换桌面时会更换合成策略的模糊背板。
 - 不推断“拔掉智键后”的系统输出。当前或本次运行中记录到的非耳机孔输出仅用于预选，多个输出时，用户确认前不切换。
-- 默认只认点击和长按。气泡分别显示「点击事件」「长按事件」；气泡彻底消失前忽略新手势。
+- 默认只认点击和长按。气泡分别显示「点击事件」「长按事件」。下一次手势在当前气泡收回结束加上 `bubbleRetractCooldownMs` 之后才接受（负值表示收回结束前最后 |x| 毫秒即可）；每个气泡独立动画，互不打断。
 - 黑色遮罩只跟按下 / 松开，与气泡是否在场无关。
 - 手势、插入动画、选择超时和配置窗口尺寸见用户 `smartKey.conf`。用户上次选择的设备类型不写入 conf，由程序单独持久化。
-- 卸载：取消「登录时打开」，再把 `/Applications/智键.app` 移到废纸篓。
+- 卸载：取消「登录时打开」，再把 `/Applications/smartKey.app` 移到废纸篓。
 
 验证：`swift test` 覆盖选择倒计时、插入延迟、上次选择记忆、音频模式、切换确认、切换失败与超时、热拔插、设备消失及独占失败。默认测试使用模拟后端，不修改真实音频路由或独占硬件；在 macOS 26 上会额外输出 `/tmp/smartKey-device-type.png`、`/tmp/smartKey-audio-output.png`、`/tmp/smartKey-audio-output-dark.png` 和 `/tmp/smartKey-audio-error.png` 用于布局检查。实际插拔、音频路由及按键仍需设备验收。
 

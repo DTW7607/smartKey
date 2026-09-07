@@ -445,6 +445,30 @@ struct DeviceSetupTests {
         #expect(RuntimeSettings.parse(text) == RuntimeSettings())
     }
 
+    @Test func existingConfMergesNewFactoryKeysAndKeepsUserValues() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let factory = dir.appendingPathComponent("factory.conf")
+        let user = dir.appendingPathComponent("user.conf")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try """
+            # factory
+            sidePt = 9
+            bubbleRetractCooldownMs = 120
+            """.write(to: factory, atomically: true, encoding: .utf8)
+        try """
+            # user
+            sidePt = 5
+            """.write(to: user, atomically: true, encoding: .utf8)
+        let url = RuntimeConfiguration.ensureFile(at: user, factory: factory)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let settings = RuntimeSettings.parse(text)
+        #expect(settings.sidePt == 5)
+        #expect(settings.bubbleRetractCooldownMs == 120)
+        #expect(text.contains("bubbleRetractCooldownMs = 120"))
+        #expect(text.contains("# factory"))
+    }
+
     @Test func deviceChoiceStoreRoundTrips() {
         let suite = "smartKey.tests.deviceChoice"
         let defaults = UserDefaults(suiteName: suite)!

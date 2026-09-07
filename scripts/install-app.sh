@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="智键.app"
+APP_NAME="smartKey.app"
 STAGE="$ROOT/.build/app/$APP_NAME"
 DEST="/Applications/$APP_NAME"
+LEGACY_DEST="/Applications/智键.app"
 INFO="$ROOT/packaging/Info.plist"
 CONF="$ROOT/smartKey.conf"
 
@@ -30,6 +31,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 pkill -x smartKey >/dev/null 2>&1 || true
 sleep 0.2
+rm -rf "$LEGACY_DEST"
 
 swift build -c release --product smartKey
 BIN_DIR="$(swift build -c release --show-bin-path)"

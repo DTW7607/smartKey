@@ -20,6 +20,7 @@ struct RuntimeSettings: Equatable {
     var bubbleHoldMs: CGFloat = 1000
     var bubbleAppearMs: CGFloat = 300
     var bubbleDisappearMs: CGFloat = 180
+    var bubbleRetractCooldownMs: CGFloat = 200
     var bubbleEndX: CGFloat = -30
     var bubbleEndY: CGFloat = 30
     var doubleClickMs: CGFloat = 450
@@ -86,6 +87,7 @@ struct RuntimeSettings: Equatable {
         "bubbleHoldMs": Rule(keyPath: \.bubbleHoldMs, range: 0...86400000),
         "bubbleAppearMs": Rule(keyPath: \.bubbleAppearMs, range: 0...86400000),
         "bubbleDisappearMs": Rule(keyPath: \.bubbleDisappearMs, range: 0...86400000),
+        "bubbleRetractCooldownMs": Rule(keyPath: \.bubbleRetractCooldownMs, range: -86400000...86400000),
         "bubbleEndX": Rule(keyPath: \.bubbleEndX, range: -10000...10000),
         "bubbleEndY": Rule(keyPath: \.bubbleEndY, range: -10000...10000),
         "doubleClickMs": Rule(keyPath: \.doubleClickMs, range: 1...86400000),
@@ -112,7 +114,8 @@ struct RuntimeSettings: Equatable {
         "sidePt", "bottomPt", "cornerRadiusPt", "sideLengthPt", "bottomLengthPt",
         "positiveRadiusPt", "negativeRadiusPt", "taperLengthPt",
         "shadowRadiusPt", "shadowOpacity", "appearMs", "disappearMs", "cornerSpeed",
-        "bubbleHoldMs", "bubbleAppearMs", "bubbleDisappearMs", "bubbleEndX", "bubbleEndY",
+        "bubbleHoldMs", "bubbleAppearMs", "bubbleDisappearMs", "bubbleRetractCooldownMs",
+        "bubbleEndX", "bubbleEndY",
         "setupScreenMarginPt", "setupChoiceWidthPt", "setupOutputWidthPt",
         "setupTableHeightPt", "setupCornerRadiusPt",
     ]
@@ -133,6 +136,38 @@ struct RuntimeSettings: Equatable {
 
     private static func format(_ value: CGFloat) -> String {
         value.rounded() == value ? String(Int(value)) : String(format: "%g", Double(value))
+    }
+
+    static func keys(in text: String) -> Set<String> {
+        var found = Set<String>()
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, rules[parts[0]] != nil { found.insert(parts[0]) }
+        }
+        return found
+    }
+
+    /// Keep values the user already set; take new keys and comments from the factory template.
+    static func overlay(userText: String, ontoFactory factoryText: String) -> String {
+        var merged = parse(factoryText)
+        let user = parse(userText)
+        for key in keys(in: userText) {
+            guard let rule = rules[key] else { continue }
+            merged[keyPath: rule.keyPath] = user[keyPath: rule.keyPath]
+        }
+        return merged.stamped(onto: factoryText)
+    }
+
+    func stamped(onto factoryText: String) -> String {
+        let lines = factoryText.components(separatedBy: .newlines)
+        let stamped = lines.map { raw -> String in
+            let line = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, let rule = Self.rules[parts[0]] else { return raw }
+            return "\(parts[0]) = \(Self.format(self[keyPath: rule.keyPath]))"
+        }
+        return stamped.joined(separator: "\n")
     }
 }
 
@@ -172,7 +207,7 @@ final class RuntimeConfiguration: ObservableObject {
     }
 
     static let fileName = "smartKey.conf"
-    static let supportFolderName = "智键"
+    static let supportFolderName = "smartKey"
 
     static func userFile(fileManager: FileManager = .default) -> URL {
         fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -182,17 +217,33 @@ final class RuntimeConfiguration: ObservableObject {
 
     static func load(url: URL? = nil) -> RuntimeConfiguration {
         let config = RuntimeConfiguration()
-        let url = url ?? ensureFile(at: userFile())
+        let url = url ?? {
+            let user = userFile()
+            if FileManager.default.isReadableFile(atPath: user.path) {
+                return ensureFile(at: user, factory: factoryTemplate())
+            }
+            return ensureFile(at: user, factory: legacyUserFile() ?? factoryTemplate())
+        }()
         config.reload(url)
         config.watch(url)
         return config
     }
 
-    /// If `url` is missing, copy the factory template or write the current defaults, then return `url`.
+    /// Missing file: copy factory (or write defaults). Existing file: merge new factory keys/comments, keep user values.
     static func ensureFile(at url: URL, factory: URL? = factoryTemplate(),
                            fileManager: FileManager = .default) -> URL {
-        if fileManager.isReadableFile(atPath: url.path) { return url }
         try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.isReadableFile(atPath: url.path) {
+            if let factory, fileManager.isReadableFile(atPath: factory.path),
+               let factoryText = try? String(contentsOf: factory, encoding: .utf8),
+               let userText = try? String(contentsOf: url, encoding: .utf8) {
+                let merged = RuntimeSettings.overlay(userText: userText, ontoFactory: factoryText)
+                if merged != userText {
+                    try? merged.write(to: url, atomically: true, encoding: .utf8)
+                }
+            }
+            return url
+        }
         if let factory, fileManager.isReadableFile(atPath: factory.path),
            let data = try? Data(contentsOf: factory) {
             try? data.write(to: url)
@@ -200,6 +251,14 @@ final class RuntimeConfiguration: ObservableObject {
             try? RuntimeSettings().serialized().write(to: url, atomically: true, encoding: .utf8)
         }
         return url
+    }
+
+    /// Previous installs used Application Support/智键; copy once if the new path is empty.
+    static func legacyUserFile(fileManager: FileManager = .default) -> URL? {
+        let url = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("智键", isDirectory: true)
+            .appendingPathComponent(fileName)
+        return fileManager.isReadableFile(atPath: url.path) ? url : nil
     }
 
     static func factoryTemplate() -> URL? {
