@@ -1,0 +1,81 @@
+# 动作扩展与脚本运行约定
+
+`SmartKeyActions` 是独立 SwiftPM library，负责动作定义、注册、分发、存储和执行。它不依赖 HID、SwiftUI 视图或提示气泡。
+
+## 新增动作类型
+
+1. 实现 `@MainActor ActionProvider`，设置稳定的 `typeID`（建议使用自己的域名前缀）。
+2. 声明 `supportedVersions` 和 `capabilities(for:)`，实现纯参数/权限检查的 `validate`。
+3. 在 `execute` 中执行动作；耗时工作移出主线程，支持取消时响应 Task cancellation。
+4. 在 `ActionCoordinator` 的组装处注册 Provider。扩展设置选择器和参数表单即可加入产品 UI，无需修改 HID 或气泡。
+
+```swift
+import SmartKeyActions
+
+@MainActor
+final class ExampleProvider: ActionProvider {
+    let typeID = "example.status"
+
+    func capabilities(for action: ActionDefinition) -> ActionCapabilities {
+        ActionCapabilities(canVerifyResult: true)
+    }
+
+    func validate(_ action: ActionDefinition, context: ActionContext) throws {
+        guard action.parameters["message"] != nil else {
+            throw ActionError("请填写消息。")
+        }
+    }
+
+    func execute(_ action: ActionDefinition, context: ActionContext) async throws -> ActionResult {
+        try Task.checkCancellation()
+        return ActionResult(action.parameters["message"]!, verified: true)
+    }
+}
+
+let registry = ActionRegistry()
+registry.register(ExampleProvider())
+let dispatcher = ActionDispatcher(registry: registry)
+let action = ActionDefinition(typeID: "example.status", name: "查看状态", parameters: ["message": "就绪"])
+let execution = dispatcher.run(action, context: ActionContext(source: .test))
+```
+
+名称必须是 1–8 个用户可见字符，且没有首尾空格或控制字符。动作类型和参数版本未知时配置保留，执行失败，不推断其他行为。当前 registry 按类型 ID 注册一个 Provider；重复注册用于显式替换实现。
+
+物理事件有低频冷却，试运行绕过该冷却；空动作不进入执行器。所有执行均产生 `ActionExecution`，包含开始/结束时间、结果、状态与取消入口。`verified=false` 表示命令已发送，不能宣称目标业务已完成。脚本退出码非零进入失败状态。
+
+后续宏可以通过该服务组合子动作，但需要自行定义循环引用、顺序、失败和取消语义。首版没有动态插件加载或宏编辑 UI。
+
+## 配置与文件
+
+用户目录为 `~/Library/Application Support/smartKey/`：
+
+- `actions.json` 是动作、绑定与脚本元信息的权威来源，带 schemaVersion。
+- `actions.previous.json` 保存上一有效版本；恢复后再次保存会保留损坏文件副本。
+- `smartKey.conf` 保留现有手势、外观等配置，`doubleClickEnabled` 由双击绑定自动管理，写作 `0/1`。手动写该字段与绑定冲突会被纠正。
+- `Scripts/<UUID>/script.sh` 是由默认应用打开的托管副本。重命名只更新元信息，不改变文件路径。
+
+动作设置通过 UI 写入后立即生效。手动更改 `actions.json` 需重启；conf 保持原有热更新。跨文件保存不能天然原子化：权威记录先落盘，派生 conf 同步失败会提示并在刷新/重启后重试。
+
+## 脚本内容、环境与快照
+
+导入复制文件，不改原文件。通过“用默认应用打开…”预览/编辑托管副本；智键不提供源码编辑器，也不改变系统关联。默认处理应用可能是终端，打开不保证仅查看。名称、说明和运行设置在智键内显式保存；信息草稿在本次设置会话中保留。
+
+试运行和物理触发每次读取磁盘上最新保存的 UTF-8 内容，不读取外部编辑器的未保存草稿。源码上限 1 MiB，不接受 NUL；读取会检测常见的原地修改和原子替换。文件监听只刷新状态，不决定实际执行内容。脚本包保存名称、说明、解释器和内容，不导出环境变量，不打包外部依赖。
+
+执行通过 `/bin/zsh -c <本次源码> <原路径>` 或 `/bin/bash -c ...`，源码作为独立参数，不拼接到包装 shell 命令中；因此本次执行不会被随后保存改写。`$0` 是托管源路径，`SMARTKEY_SCRIPT_PATH` 和 `SMARTKEY_SCRIPT_DIR` 明确提供原路径。使用 bash 的 `BASH_SOURCE`、zsh 的特殊来源变量或源码行号追踪时，不应假设与解释器直接读取文件完全相同。脚本与环境变量的合计长度还受系统 ARG_MAX 限制；超限会拒绝启动并报告原因。
+
+工作目录默认托管文件所在目录，可指定绝对路径。依赖原项目相邻文件的脚本需配置工作目录；相对路径不会自动指向导入来源。默认 PATH 为 `/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin`，界面可覆盖环境变量。shell 非登录、非交互运行，仍遵循所选 shell 的标准启动行为；不自动加载用户交互终端环境或安装依赖。stdin 为 `/dev/null`。
+
+同时最多一个脚本执行，重复触发不排队。超时默认 30 秒，支持 1–3600 秒。取消/超时先 TERM，再对仍存活的受管进程组 KILL；正常退出也清理同组后台子进程。主动脱离进程组的守护进程不在保证范围，首版不提供常驻服务管理。执行以当前用户权限进行，无自动提权，停止不撤销已经发生的外部副作用。
+
+stdout/stderr 分别最多保留 256 KiB，超出仍排空管道并标记截断。结果在本次应用会话中保留最多 100 条，重启不保留详细输出；不自动上传诊断或脚本内容。
+
+## 构建与验证
+
+常规：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`。
+
+在禁止嵌套 sandbox 的运行环境中，可使用 `swift test --disable-sandbox`，并把 `CLANG_MODULE_CACHE_PATH` 与 `SWIFTPM_MODULECACHE_OVERRIDE` 指向可写临时目录。
+
+`./scripts/build-app.sh` 只生成 `.build/release-app/smartKey.app`，不安装、不启动、不抢占硬件。它是本机 ad-hoc 签名构建，不是 Developer ID 公证分发包。
+
+开发预览：运行构建产物并传 `--settings-preview`，使用独立临时配置，不启动 HID/音频管理/登录项。可通过 `SMARTKEY_PREVIEW_DIRECTORY` 指定预览数据目录。预览中的测试按钮仍会真实执行选定动作。

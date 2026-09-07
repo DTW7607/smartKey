@@ -5,6 +5,8 @@ public final class SmartKeyService {
     public var onAudioChange: ((SmartKeyAudioSnapshot) -> Void)?
     public var onButton: ((SmartKeyButtonPhase) -> Void)?
     public var onGesture: ((SmartKeyGestureEvent) -> Void)?
+    public var onGestureSessionStart: (() -> Void)?
+    public var onGestureSessionEnd: (() -> Void)?
     public var onSeizeStatusChange: ((SmartKeySeizeStatus) -> Void)?
     public var onOutputGuardRestoreFailed: ((SmartKeyAudioSnapshot) -> Void)?
 
@@ -59,6 +61,12 @@ public final class SmartKeyService {
         recognizer.onGesture = { [weak self] event in
             self?.onGesture?(event)
         }
+        recognizer.onSessionStart = { [weak self] in
+            self?.onGestureSessionStart?()
+        }
+        recognizer.onSessionEnd = { [weak self] in
+            self?.onGestureSessionEnd?()
+        }
     }
 
     deinit { stop() }
@@ -93,6 +101,12 @@ public final class SmartKeyService {
         remoteWanted = enabled
         guard running else { return }
         applyRemote()
+    }
+
+    public func resetPendingGesture() {
+        onMain { [weak self] in
+            self?.recognizer.reset()
+        }
     }
 
     public func setOutputGuardEnabled(_ enabled: Bool) {

@@ -2,6 +2,14 @@ import AppKit
 import Combine
 import SmartKey
 import SwiftUI
+import SmartKeyActions
+
+enum AppRunMode {
+    static var preview: Bool { CommandLine.arguments.contains("--settings-preview") }
+    static var previewDirectory: URL {
+        URL(fileURLWithPath: ProcessInfo.processInfo.environment["SMARTKEY_PREVIEW_DIRECTORY"] ?? NSTemporaryDirectory() + "smartKey-settings-preview", isDirectory: true)
+    }
+}
 
 @main
 enum SmartKeyPopupApp {
@@ -10,7 +18,7 @@ enum SmartKeyPopupApp {
             fputs("smartKey 需要 macOS 26 或更高版本\n", stderr)
             exit(1)
         }
-        guard SingleInstance.acquire() else {
+        guard AppRunMode.preview || SingleInstance.acquire() else {
             fputs("智键已在运行\n", stderr)
             exit(0)
         }
@@ -27,7 +35,11 @@ enum SmartKeyPopupApp {
 final class PopupDelegate: NSObject, NSApplicationDelegate {
     let config = PopupConfiguration()
     let press = PressState()
-    let mask = RuntimeConfiguration.load()
+    let mask = RuntimeConfiguration.load(url: AppRunMode.preview ? AppRunMode.previewDirectory.appendingPathComponent("smartKey.conf") : nil)
+    private var actions: ActionCoordinator?
+    private var settingsWindow: SettingsWindowController?
+    private var actionCancellables = Set<AnyCancellable>()
+    private var executionBubbles: [UUID: GestureBubble] = [:]
     private let service = SmartKeyService(
         configuration: SmartKeyConfiguration(
             emitJackOnStart: true,
@@ -38,7 +50,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     private var maskCancellable: AnyCancellable?
     private var status: NSStatusItem!
     private var bubbles: [GestureBubble] = []
-    private var nextGestureAt: TimeInterval = 0
     private lazy var setup = DeviceSetupModel(backend: service, timing: mask.setupTiming,
                                               choiceStore: DeviceChoiceStore())
     private var setupPanel: PopupPanel!
@@ -47,6 +58,13 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     private var insertionFinishWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installApplicationMenu()
+        if AppRunMode.preview {
+            createActionSystem()
+            actions?.deviceStatus = "设置预览 · 不连接硬件"
+            settingsWindow?.open()
+            return
+        }
         let window = config.window
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
@@ -77,6 +95,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         LoginItem.registerIfNeeded()
         installStatusMenu()
         refreshMenu()
+        createActionSystem()
 
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(screensChanged),
@@ -89,7 +108,25 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         startSmartKey()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { AppRunMode.preview }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard actions?.dispatcher.runningScript != nil else { return .terminateNow }
+        let alert = NSAlert(); alert.messageText = "还有脚本正在运行"
+        alert.informativeText = "停止任务后退出，或返回继续运行。"
+        alert.addButton(withTitle: "取消退出"); alert.addButton(withTitle: "停止任务并退出")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        actions?.dispatcher.cancelAll()
+        Task { @MainActor [weak self] in
+            for _ in 0..<120 {
+                if self?.actions?.dispatcher.runningScript == nil { sender.reply(toApplicationShouldTerminate: true); return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            self?.actions?.notice = "任务仍在停止，请稍后再退出。"
+            sender.reply(toApplicationShouldTerminate: false)
+        }
+        return .terminateLater
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         setupTimer?.invalidate()
@@ -97,7 +134,26 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         service.stop()
     }
 
+    private func createActionSystem() {
+        do {
+            let directory = AppRunMode.preview ? AppRunMode.previewDirectory : RuntimeConfiguration.userFile().deletingLastPathComponent()
+            let actions = try ActionCoordinator(configuration: mask, directory: directory)
+            self.actions = actions
+            settingsWindow = SettingsWindowController(coordinator: actions)
+            if !AppRunMode.preview { actions.onReconfigure = { [weak self] in self?.reconfigureDevice() } }
+            actions.onBindingsChanged = { [weak self] in self?.applySmartKeyTiming(); self?.refreshMenu() }
+            actions.onFeedback = { [weak self] execution in self?.showExecution(execution) }
+            actions.$isSuspended.sink { [weak self] suspended in if suspended { self?.service.resetPendingGesture() } }.store(in: &actionCancellables)
+            refreshMenu()
+        } catch {
+            let alert = NSAlert(); alert.messageText = "动作配置无法载入"; alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "好"); alert.runModal()
+        }
+    }
+
     private func startSmartKey() {
+        service.onGestureSessionStart = { [weak self] in self?.actions?.beginSession() }
+        service.onGestureSessionEnd = { [weak self] in self?.actions?.endSession() }
         setup.onStageChange = { [weak self] in
             guard let self else { return }
             self.press.pressed = false
@@ -156,7 +212,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     private func applySmartKeyTiming() {
         let doubleMs = max(Int(mask.doubleClickMs.rounded()), 1)
         let longMs = max(Int(mask.longPressMs.rounded()), 1)
-        let wantDouble = mask.doubleClickEnabled != 0
+        let wantDouble = actions?.store.document.doubleClickEnabled ?? false
         var next = service.configuration
         let hasDouble = next.enabledEvents.contains(.doubleClick)
         guard next.doubleClickMs != doubleMs || next.longPressMs != longMs || hasDouble != wantDouble else { return }
@@ -183,32 +239,31 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func handleGesture(_ event: SmartKeyGestureEvent) {
         guard setup.acceptsButtons else { return }
-        let now = CACurrentMediaTime()
-        guard now >= nextGestureAt else { return }
-        let text: String
-        switch event.gesture {
-        case .singleClick:
-            text = "点击事件"
-        case .longPress:
-            text = "长按事件"
-        case .doubleClick:
-            text = "双击事件"
-        }
+        let slot: GestureSlot
+        switch event.gesture { case .singleClick: slot = .singleClick; case .doubleClick: slot = .doubleClick; case .longPress: slot = .longPress }
+        actions?.runPhysical(slot)
+    }
+
+    private func showExecution(_ execution: ActionExecution) {
+        guard !AppRunMode.preview, actions?.isSuspended == false else { return }
+        if let bubble = executionBubbles[execution.id] { bubble.update(symbol: execution.state.symbol, status: execution.state.title); return }
+        // A completed action that has since been unbound should not create a new HUD.
+        if execution.state != .running, actions?.store.document.actions.contains(where: { $0.id == execution.action.id }) != true { return }
         guard let screen = currentScreen() else { return }
-        let hold = max(mask.bubbleHoldMs, 0) / 1000
-        let disappear = max(mask.bubbleDisappearMs, 1) / 1000
-        nextGestureAt = now + hold + disappear + mask.bubbleRetractCooldownMs / 1000
         let window = config.window
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
         let overlay = makeOverlay(
             rect: NSRect(origin: .zero, size: config.layout.panelSize),
             style: style, window: window)
-        let bubble = GestureBubble(panel: overlay, config: config, mask: mask, text: text)
+        let bubble = GestureBubble(panel: overlay, config: config, mask: mask, text: execution.action.name)
+        bubble.update(symbol: execution.state.symbol, status: execution.state.title)
+        executionBubbles[execution.id] = bubble
         bubbles.append(bubble)
         bubble.start(on: screen) { [weak self, weak bubble] in
             guard let self, let bubble else { return }
             self.bubbles.removeAll { $0 === bubble }
+            self.executionBubbles.removeValue(forKey: execution.id)
         }
     }
 
@@ -238,6 +293,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         case header = 1
         case reconfigure = 2
         case login = 3
+        case pause = 4
     }
 
     private func installStatusMenu() {
@@ -251,6 +307,8 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         reconfigure.tag = MenuTag.reconfigure.rawValue
         menu.addItem(reconfigure)
         menu.addItem(.separator())
+        menu.addItem(item("设置…", #selector(openSettings), key: ","))
+        let pause = item("暂停动作", #selector(toggleActions)); pause.tag = MenuTag.pause.rawValue; menu.addItem(pause)
         if LoginItem.isAvailable {
             let login = item("登录时打开", #selector(toggleLoginItem))
             login.tag = MenuTag.login.rawValue
@@ -260,8 +318,27 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         status.menu = menu
     }
 
+    private func installApplicationMenu() {
+        let bar = NSMenu()
+        let appItem = NSMenuItem(); let appMenu = NSMenu(title: "智键")
+        appMenu.addItem(item("设置…", #selector(openSettings), key: ","))
+        appMenu.addItem(.separator()); appMenu.addItem(item("退出智键", #selector(quit), key: "q"))
+        appItem.submenu = appMenu; bar.addItem(appItem)
+        let editItem = NSMenuItem(); let editMenu = NSMenu(title: "编辑")
+        for (title, selector, key) in [("撤销", "undo:", "z"), ("剪切", "cut:", "x"), ("复制", "copy:", "c"), ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a")] {
+            editMenu.addItem(NSMenuItem(title: title, action: NSSelectorFromString(selector), keyEquivalent: key))
+        }
+        editItem.submenu = editMenu; bar.addItem(editItem)
+        let windowItem = NSMenuItem(); let windowMenu = NSMenu(title: "窗口")
+        windowMenu.addItem(NSMenuItem(title: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        windowItem.submenu = windowMenu; bar.addItem(windowItem)
+        NSApp.mainMenu = bar
+    }
+
     private func refreshMenu() {
-        guard let menu = status.menu else { return }
+        actions?.deviceStatus = AppRunMode.preview ? "设置预览 · 不连接硬件" : setupMenuText
+        guard let menu = status?.menu else { return }
+        if let pause = menu.item(withTag: MenuTag.pause.rawValue) { pause.title = actions?.store.document.paused == true ? "恢复动作" : "暂停动作"; pause.isEnabled = actions != nil }
         if let header = menu.item(withTag: MenuTag.header.rawValue) {
             header.title = "智键 · \(setupMenuText)"
             menu.itemChanged(header)
@@ -371,7 +448,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func dismissGestureBubble() {
-        nextGestureAt = 0
+        executionBubbles.removeAll()
         let live = bubbles
         bubbles.removeAll()
         live.forEach { $0.dismiss() }
@@ -392,6 +469,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reapplyFocusAppearance() {
+        actions?.refresh()
         bubbles.forEach { $0.applyFocusAppearance() }
     }
 
@@ -410,9 +488,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
     }
 
+    @objc private func openSettings() { if settingsWindow == nil { createActionSystem() }; settingsWindow?.open() }
+    @objc private func toggleActions() { if let actions { actions.setPaused(!actions.store.document.paused) }; refreshMenu() }
+
     @objc private func quit() {
-        dismissGestureBubble()
-        service.stop()
         NSApp.terminate(nil)
     }
 }

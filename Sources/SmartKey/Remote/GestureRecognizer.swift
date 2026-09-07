@@ -1,9 +1,35 @@
 import Foundation
 
+final class GestureRecognizerScheduledTask {
+    private let cancelAction: () -> Void
+
+    init(cancel: @escaping () -> Void) {
+        self.cancelAction = cancel
+    }
+
+    func cancel() {
+        cancelAction()
+    }
+}
+
+protocol GestureRecognizerScheduler {
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> GestureRecognizerScheduledTask
+}
+
+private final class MainGestureRecognizerScheduler: GestureRecognizerScheduler {
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> GestureRecognizerScheduledTask {
+        let work = DispatchWorkItem(block: action)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        return GestureRecognizerScheduledTask(cancel: work.cancel)
+    }
+}
+
 final class GestureRecognizer {
     var configuration: SmartKeyConfiguration
     var onButton: ((SmartKeyButtonPhase) -> Void)?
     var onGesture: ((SmartKeyGestureEvent) -> Void)?
+    var onSessionStart: (() -> Void)?
+    var onSessionEnd: (() -> Void)?
 
     private(set) var isButtonPressed = false
 
@@ -16,16 +42,28 @@ final class GestureRecognizer {
     }
 
     private var state: State = .idle
-    private var longPressWork: DispatchWorkItem?
-    private var singleClickWork: DispatchWorkItem?
+    private var longPressWork: GestureRecognizerScheduledTask?
+    private var singleClickWork: GestureRecognizerScheduledTask?
+    private var sessionConfiguration: SmartKeyConfiguration?
+    private var sessionID: UInt64?
+    private var nextSessionID: UInt64 = 0
     private var singleCount = 0
     private var doubleCount = 0
     private var longCount = 0
+    private let scheduler: GestureRecognizerScheduler
 
-    private var enabled: SmartKeyEventKind { configuration.enabledEvents }
+    private var activeConfiguration: SmartKeyConfiguration {
+        sessionConfiguration ?? configuration
+    }
 
-    init(configuration: SmartKeyConfiguration) {
+    private var enabled: SmartKeyEventKind { activeConfiguration.enabledEvents }
+
+    init(
+        configuration: SmartKeyConfiguration,
+        scheduler: GestureRecognizerScheduler = MainGestureRecognizerScheduler()
+    ) {
         self.configuration = configuration
+        self.scheduler = scheduler
     }
 
     func handle(pressed: Bool) {
@@ -34,15 +72,6 @@ final class GestureRecognizer {
 
     func applyConfiguration(_ new: SmartKeyConfiguration) {
         configuration = new
-        if !new.enabledEvents.contains(.longPress), case .down(true) = state {
-            cancel(&longPressWork)
-            state = .down(longArmed: false)
-        }
-        if !new.enabledEvents.contains(.doubleClick), case .waitingForDouble = state {
-            cancel(&singleClickWork)
-            emitGesture(.singleClick)
-            state = .idle
-        }
     }
 
     func reset() {
@@ -52,7 +81,7 @@ final class GestureRecognizer {
             isButtonPressed = false
             emitButton(.released)
         }
-        state = .idle
+        endSession()
     }
 
     func resetCounts() {
@@ -71,6 +100,7 @@ final class GestureRecognizer {
             emitGesture(.doubleClick)
             state = .downSecond
         case .idle:
+            startSession()
             isButtonPressed = true
             emitButton(.pressed)
             let longOn = enabled.contains(.longPress)
@@ -92,12 +122,12 @@ final class GestureRecognizer {
                 armSingleClick()
             } else {
                 emitGesture(.singleClick)
-                state = .idle
+                endSession()
             }
         case .downSecond, .downLongFired:
             isButtonPressed = false
             emitButton(.released)
-            state = .idle
+            endSession()
         case .idle, .waitingForDouble:
             break
         }
@@ -105,32 +135,57 @@ final class GestureRecognizer {
 
     private func armLongPress() {
         cancel(&longPressWork)
-        let work = DispatchWorkItem { [weak self] in
-            self?.fireLongPress()
+        guard let sessionID else { return }
+        let delay = activeConfiguration.longPressDuration
+        let work = scheduler.schedule(after: delay) { [weak self] in
+            guard let self, self.sessionID == sessionID else { return }
+            self.fireLongPress()
         }
         longPressWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + configuration.longPressDuration, execute: work)
     }
 
     private func armSingleClick() {
         cancel(&singleClickWork)
-        let work = DispatchWorkItem { [weak self] in
-            self?.fireSingle()
+        guard let sessionID else { return }
+        let delay = activeConfiguration.doubleClickGap
+        let work = scheduler.schedule(after: delay) { [weak self] in
+            guard let self, self.sessionID == sessionID else { return }
+            self.fireSingle()
         }
         singleClickWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + configuration.doubleClickGap, execute: work)
     }
 
     private func fireLongPress() {
         guard case .down(let longArmed) = state, longArmed, isButtonPressed else { return }
+        longPressWork = nil
         emitGesture(.longPress)
         state = .downLongFired
     }
 
     private func fireSingle() {
         guard case .waitingForDouble = state else { return }
+        singleClickWork = nil
         emitGesture(.singleClick)
+        endSession()
+    }
+
+    private func startSession() {
+        precondition(sessionID == nil)
+        nextSessionID &+= 1
+        sessionID = nextSessionID
+        sessionConfiguration = configuration
+        onSessionStart?()
+    }
+
+    private func endSession() {
+        guard sessionID != nil else {
+            state = .idle
+            return
+        }
         state = .idle
+        sessionID = nil
+        sessionConfiguration = nil
+        onSessionEnd?()
     }
 
     private func emitButton(_ phase: SmartKeyButtonPhase) {
@@ -162,7 +217,7 @@ final class GestureRecognizer {
         onGesture?(SmartKeyGestureEvent(gesture: gesture, count: count))
     }
 
-    private func cancel(_ work: inout DispatchWorkItem?) {
+    private func cancel(_ work: inout GestureRecognizerScheduledTask?) {
         work?.cancel()
         work = nil
     }

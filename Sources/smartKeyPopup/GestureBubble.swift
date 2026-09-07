@@ -10,12 +10,13 @@ final class GestureBubble {
     private var hideWork: DispatchWorkItem?
     private var motionTimer: Timer?
     private var onFinished: (() -> Void)?
+    private let content: BubbleContent
 
     init(panel: PopupPanel, config: PopupConfiguration, mask: RuntimeConfiguration, text: String) {
         self.panel = panel
         self.mask = mask
         self.outerPadding = config.layout.outerPadding
-        let content = BubbleContent(text: text)
+        content = BubbleContent(text: text)
         panel.contentView = GlassBubble.make(config: config, content: content)
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
         panel.alphaValue = 1
@@ -28,6 +29,8 @@ final class GestureBubble {
             CATransaction.commit()
         }
     }
+
+    func update(symbol: String, status: String) { content.symbol = symbol; content.status = status }
 
     func start(on screen: NSScreen, finished: @escaping () -> Void) {
         onFinished = finished
@@ -93,9 +96,9 @@ final class GestureBubble {
         view?.wantsLayer = true
         let layer = view?.layer
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let duration = max((appearing ? mask.bubbleAppearMs : mask.bubbleDisappearMs), 1) / 1000
-        let fromOrigin = appearing ? startOrigin(on: screen) : panel.frame.origin
-        let toOrigin = appearing ? restOrigin(on: screen) : startOrigin(on: screen)
+        let duration = reduce ? 0.1 : max((appearing ? mask.bubbleAppearMs : mask.bubbleDisappearMs), 1) / 1000
+        let fromOrigin = reduce ? restOrigin(on: screen) : (appearing ? startOrigin(on: screen) : panel.frame.origin)
+        let toOrigin = reduce ? restOrigin(on: screen) : (appearing ? restOrigin(on: screen) : startOrigin(on: screen))
         let fromScale: CGFloat = appearing ? 0.45 : 1
         let toScale: CGFloat = appearing ? 1 : 0.45
 
@@ -103,7 +106,7 @@ final class GestureBubble {
         CATransaction.setDisableActions(true)
         if appearing {
             panel.setFrame(NSRect(origin: fromOrigin, size: panel.frame.size), display: true)
-            layer?.transform = CATransform3DMakeScale(fromScale, fromScale, 1)
+            layer?.transform = reduce ? CATransform3DIdentity : CATransform3DMakeScale(fromScale, fromScale, 1)
             layer?.opacity = 1
             panel.alphaValue = 1
         }
@@ -130,6 +133,7 @@ final class GestureBubble {
                     let s = fromScale + (toScale - fromScale) * e
                     layer.transform = CATransform3DMakeScale(s, s, 1)
                 }
+                if reduce { self.panel.alphaValue = appearing ? CGFloat(u) : CGFloat(1 - u) }
                 if u >= 1 {
                     timer.invalidate()
                     self.motionTimer = nil

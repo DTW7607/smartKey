@@ -13,6 +13,7 @@ final class PressState: ObservableObject {
 
 /// 右下角 L 形黑罩：内侧平面，远端为正圆角接负圆角贴边。
 struct PressMaskView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var state: PressState
     @ObservedObject var mask: RuntimeConfiguration
 
@@ -36,7 +37,7 @@ struct PressMaskView: View {
         }
         .frame(width: size.width + pad, height: size.height + pad, alignment: .bottomTrailing)
         .animation(
-            .easeOut(duration: state.insertionAnimation
+            reduceMotion ? nil : .easeOut(duration: state.insertionAnimation
                      ? (state.maskPressed ? state.insertionTiming.appear : state.insertionTiming.disappear)
                      : (state.maskPressed ? mask.appearMs : mask.disappearMs) / 1000),
             value: state.maskPressed

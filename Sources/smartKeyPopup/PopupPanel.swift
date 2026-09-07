@@ -1,5 +1,4 @@
 import AppKit
-import ObjectiveC
 import SwiftUI
 
 final class PopupPanel: NSPanel {
@@ -12,26 +11,12 @@ final class PopupPanel: NSPanel {
         frameRect
     }
 
-    /// 不成为真正的 key window，只把绘制切到焦点外观。
+    /// Compatibility hook for existing bubble callers.
+    ///
+    /// AppKit owns a window's active appearance. The bubble is a nonactivating
+    /// panel, so this method intentionally does not try to make it look key or
+    /// send a synthetic key-state notification through private selectors.
     func applyFocusAppearance() {
-        let acquire = NSSelectorFromString("acquireKeyAppearance")
-        if responds(to: acquire) { perform(acquire) }
-        setBool("_setHasActiveAppearance:", true)
-        notifyGlassKeyState(contentView)
-    }
-
-    private func setBool(_ name: String, _ value: Bool) {
-        let sel = NSSelectorFromString(name)
-        guard responds(to: sel), let method = class_getInstanceMethod(Self.self, sel) else { return }
-        typealias Fn = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(method_getImplementation(method), to: Fn.self)(self, sel, value)
-    }
-
-    private func notifyGlassKeyState(_ view: NSView?) {
-        guard let view else { return }
-        let sel = NSSelectorFromString("_windowChangedKeyState")
-        if view.responds(to: sel) { view.perform(sel) }
-        view.subviews.forEach { notifyGlassKeyState($0) }
     }
 }
 

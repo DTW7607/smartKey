@@ -194,6 +194,7 @@ final class RuntimeConfiguration: ObservableObject {
     @Published private(set) var values: RuntimeSettings
     private var source: DispatchSourceFileSystemObject?
     private var reloadWork: DispatchWorkItem?
+    private(set) var sourceURL: URL?
 
     init(values: RuntimeSettings = RuntimeSettings()) { self.values = values }
 
@@ -227,8 +228,35 @@ final class RuntimeConfiguration: ObservableObject {
             return ensureFile(at: user, factory: legacyUserFile() ?? factoryTemplate())
         }()
         config.reload(url)
+        config.sourceURL = url
         config.watch(url)
         return config
+    }
+
+    /// Patch only owned keys. Preserve comments, unknown fields and unrelated user values.
+    func write(_ updates: [String: Double]) throws {
+        guard let url = sourceURL else { throw NSError(domain: "smartKey", code: 1, userInfo: [NSLocalizedDescriptionKey: "配置文件未载入。"] ) }
+        let original = try String(contentsOf: url, encoding: .utf8)
+        let next = Self.replacing(updates, in: original)
+        if original != next { try next.write(to: url, atomically: true, encoding: .utf8) }
+        let parsed = RuntimeSettings.parse(next)
+        if parsed != values { values = parsed }
+    }
+
+    static func replacing(_ updates: [String: Double], in text: String) -> String {
+        var seen = Set<String>()
+        var lines = text.components(separatedBy: "\n").map { line -> String in
+            let body = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            let parts = body[0].split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, let value = updates[parts[0]] else { return line }
+            seen.insert(parts[0])
+            let formatted = value.rounded() == value ? String(Int(value)) : String(value)
+            return "\(parts[0]) = \(formatted)" + (body.count > 1 ? " #" + body[1] : "")
+        }
+        for key in updates.keys.sorted() where !seen.contains(key) {
+            lines.append("\(key) = \(updates[key]!)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Missing file: copy factory (or write defaults). Existing file: merge new factory keys/comments, keep user values.
