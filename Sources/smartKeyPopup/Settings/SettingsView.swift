@@ -68,7 +68,7 @@ struct GeneralSettingsView: View {
             Section("权限与启动") {
                 LabeledContent("辅助功能", value: KeyboardActionProvider.isAuthorized ? "已允许" : "尚未允许")
                 HStack {
-                    Button("授权键盘与媒体控制…") { KeyboardActionProvider.requestAuthorization(); coordinator.openPermissions() }
+                    Button("授权键盘与媒体控制…") { KeyboardActionProvider.requestAuthorization() }
                     Button("刷新状态") { coordinator.refresh() }
                 }
                 Toggle("登录时打开", isOn: Binding(get: { LoginItem.isEnabled }, set: { LoginItem.setEnabled($0); coordinator.objectWillChange.send() }))

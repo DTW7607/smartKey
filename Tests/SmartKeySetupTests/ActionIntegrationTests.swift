@@ -68,6 +68,66 @@ struct ActionIntegrationTests {
         coordinator.endSession()
     }
 
+    @Test func listRenameSurvivesPendingDetailsSaveAndReopen() throws {
+        let (directory, _, coordinator) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try #require(coordinator.createScript())
+        coordinator.bind(ActionDefinition(typeID: "script", name: original.name,
+            parameters: ["scriptID": original.id.uuidString]), to: .singleClick)
+        var editor = ScriptDraft(script: original)
+        editor.script.summary = "尚未自动保存的说明"
+        editor.script.timeout = 42
+        var renamed = original
+        renamed.name = "新名称"
+        coordinator.saveScript(renamed)
+
+        // A pending autosave or onDisappear still holds the old details draft.
+        editor.synchronizeName(with: try #require(coordinator.store.document.scripts.first))
+        #expect(editor.script.name == "新名称")
+        #expect(editor.script.summary == "尚未自动保存的说明")
+        #expect(editor.script.timeout == 42)
+        try coordinator.store.saveScript(editor.script)
+        editor.didSave(editor.script)
+
+        let reopened = try ActionStore(directory: directory)
+        #expect(reopened.document.scripts.first?.name == "新名称")
+        #expect(reopened.document.scripts.first?.summary == "尚未自动保存的说明")
+        #expect(reopened.document.action(for: .singleClick)?.name == "新名称")
+    }
+
+    @Test func cachedInvalidDraftAcceptsListRenameWithoutLosingEdits() throws {
+        let (directory, _, coordinator) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try #require(coordinator.createScript())
+        var editor = ScriptDraft(script: original)
+        editor.script.name = "未保存名称"
+        editor.script.summary = "保留说明"
+        editor.environmentText = "invalid environment"
+        coordinator.scriptDrafts[original.id] = editor
+        var renamed = original
+        renamed.name = "列表改名"
+        coordinator.saveScript(renamed)
+
+        var restored = try #require(coordinator.scriptDrafts[original.id])
+        restored.synchronizeName(with: try #require(coordinator.store.document.scripts.first))
+        #expect(restored.script.name == "列表改名")
+        #expect(restored.script.summary == "保留说明")
+        #expect(restored.environmentText == "invalid environment")
+    }
+
+    @Test func detailsRenameRemainsEditableAcrossAutosaves() {
+        let original = ScriptRecord(name: "原名称")
+        var editor = ScriptDraft(script: original)
+        editor.script.name = "详情改名"
+        editor.synchronizeName(with: original)
+        #expect(editor.script.name == "详情改名")
+        let saved = editor.script
+        editor.didSave(saved)
+        editor.script.name = "再次改名"
+        editor.synchronizeName(with: saved)
+        #expect(editor.script.name == "再次改名")
+    }
+
     @Test func renderSettingsPages() throws {
         _ = NSApplication.shared
         let (directory, _, coordinator) = try fixture()

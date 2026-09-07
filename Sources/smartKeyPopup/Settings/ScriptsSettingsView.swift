@@ -103,6 +103,7 @@ struct ScriptsSettingsView: View {
         }
     }
     private func commitRename(_ script: ScriptRecord) {
+        guard renaming == script.id else { return }
         let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         renaming = nil
         guard trimmed != script.name else { return }
@@ -117,22 +118,22 @@ struct ScriptDetailsView: View {
     @ObservedObject var coordinator: ActionCoordinator
     let original: ScriptRecord
     var onDelete: () -> Void = {}
-    @State private var draft: ScriptRecord
-    @State private var environmentText: String
+    @State private var editor: ScriptDraft
     @State private var preview = ""
     @State private var error: String?
     @State private var saveTask: Task<Void, Never>?
     init(coordinator: ActionCoordinator, original: ScriptRecord, onDelete: @escaping () -> Void = {}) {
         self.coordinator = coordinator; self.original = original; self.onDelete = onDelete
-        _draft = State(initialValue: coordinator.scriptDrafts[original.id]?.0 ?? original)
-        _environmentText = State(initialValue: coordinator.scriptDrafts[original.id]?.1 ?? original.environment.keys.sorted().map { "\($0)=\(original.environment[$0]!)" }.joined(separator: "\n"))
+        var editor = coordinator.scriptDrafts[original.id] ?? ScriptDraft(script: original)
+        editor.synchronizeName(with: original)
+        _editor = State(initialValue: editor)
     }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(draft.name).font(.title2.bold())
+                        Text(editor.script.name).font(.title2.bold())
                         Text(coordinator.library.statuses[original.id] ?? "正在读取文件状态…").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -161,23 +162,23 @@ struct ScriptDetailsView: View {
                 }
                 GroupBox("脚本信息") {
                     VStack(alignment: .leading, spacing: 12) {
-                        TextField("名称", text: $draft.name)
-                        Text("\(ActionNames.unitCount(draft.name))/\(ActionNames.maxUnits)")
-                            .font(.caption).foregroundStyle(ActionNames.unitCount(draft.name) > ActionNames.maxUnits ? .red : .secondary)
-                        TextField("说明", text: $draft.summary, axis: .vertical).lineLimit(3...5)
+                        TextField("名称", text: $editor.script.name)
+                        Text("\(ActionNames.unitCount(editor.script.name))/\(ActionNames.maxUnits)")
+                            .font(.caption).foregroundStyle(ActionNames.unitCount(editor.script.name) > ActionNames.maxUnits ? .red : .secondary)
+                        TextField("说明", text: $editor.script.summary, axis: .vertical).lineLimit(3...5)
                         Text("内容").font(.caption).foregroundStyle(.secondary)
                         TextEditor(text: $preview)
                             .font(.system(.callout, design: .monospaced))
                             .disabled(true)
                             .frame(minHeight: 140, maxHeight: 220)
-                        Picker("解释器", selection: $draft.interpreter) { Text("zsh").tag("/bin/zsh"); Text("bash").tag("/bin/bash") }
-                        TextField("工作目录（留空使用脚本所在目录）", text: $draft.workingDirectory)
+                        Picker("解释器", selection: $editor.script.interpreter) { Text("zsh").tag("/bin/zsh"); Text("bash").tag("/bin/bash") }
+                        TextField("工作目录（留空使用脚本所在目录）", text: $editor.script.workingDirectory)
                         HStack {
                             Text("超时（秒）")
-                            TextField("30", value: $draft.timeout, format: .number).frame(width: 85)
+                            TextField("30", value: $editor.script.timeout, format: .number).frame(width: 85)
                         }
                         DisclosureGroup("环境变量") {
-                            TextField("每行 NAME=value", text: $environmentText, axis: .vertical).font(.system(.callout, design: .monospaced)).lineLimit(3...8)
+                            TextField("每行 NAME=value", text: $editor.environmentText, axis: .vertical).font(.system(.callout, design: .monospaced)).lineLimit(3...8)
                             Text("配置保存在本机。请勿在此保存密码或令牌。").font(.caption).foregroundStyle(.secondary)
                         }
                         if let error { Text(error).font(.callout).foregroundStyle(.red) }
@@ -193,14 +194,15 @@ struct ScriptDetailsView: View {
         }
         .frame(minWidth: 310, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { loadPreview() }
+        .onChange(of: original) { _, stored in editor.synchronizeName(with: stored) }
         .onChange(of: coordinator.library.statuses[original.id]) { _, _ in loadPreview() }
-        .onChange(of: draft) { _, _ in scheduleSave() }
-        .onChange(of: environmentText) { _, _ in scheduleSave() }
+        .onChange(of: editor.script) { _, _ in scheduleSave() }
+        .onChange(of: editor.environmentText) { _, _ in scheduleSave() }
         .onDisappear {
             saveTask?.cancel()
             if coordinator.store.document.scripts.contains(where: { $0.id == original.id }) {
                 save()
-                coordinator.scriptDrafts[original.id] = (draft, environmentText)
+                coordinator.scriptDrafts[original.id] = editor
             }
         }
     }
@@ -220,22 +222,25 @@ struct ScriptDetailsView: View {
         }
     }
     private func save() {
-        guard coordinator.store.document.scripts.contains(where: { $0.id == original.id }) else { return }
+        guard let stored = coordinator.store.document.scripts.first(where: { $0.id == original.id }) else { return }
+        // Also reconcile here: disappearing or a pending autosave can precede onChange.
+        editor.synchronizeName(with: stored)
         do {
-            var next = draft
+            var next = editor.script
             next.name = next.name.trimmingCharacters(in: .whitespacesAndNewlines)
             var environment: [String: String] = [:]
-            for line in environmentText.split(separator: "\n") {
+            for line in editor.environmentText.split(separator: "\n") {
                 let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                 guard parts.count == 2 else { throw ActionError("环境变量请使用 NAME=value 格式。") }
                 environment[String(parts[0])] = String(parts[1])
             }
             next.environment = environment
-            if let stored = coordinator.store.document.scripts.first(where: { $0.id == original.id }), stored == next {
+            if stored == next {
+                editor.didSave(next)
                 error = nil
                 return
             }
-            try next.validate(); try coordinator.store.saveScript(next); draft = next
+            try next.validate(); try coordinator.store.saveScript(next); editor.didSave(next)
             coordinator.scriptDrafts.removeValue(forKey: original.id); coordinator.refresh(); error = nil
         } catch { self.error = error.localizedDescription }
     }

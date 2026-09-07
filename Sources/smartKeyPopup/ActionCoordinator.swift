@@ -27,7 +27,7 @@ final class ActionCoordinator: ObservableObject {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var keyboardTest: Task<Void, Never>?
     private var suspensionReasons = Set<String>()
-    var scriptDrafts: [UUID: (ScriptRecord, String)] = [:]
+    var scriptDrafts: [UUID: ScriptDraft] = [:]
 
     init(configuration: RuntimeConfiguration, directory: URL) throws {
         self.configuration = configuration
@@ -179,8 +179,5 @@ final class ActionCoordinator: ObservableObject {
     func export(_ script: ScriptRecord, package: Bool) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = script.name + (package ? ".smartkeyscript" : ".sh")
         if panel.runModal() == .OK, let url = panel.url { perform { try library.exportFile(for: script, to: url, package: package) } }
-    }
-    func openPermissions() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 }
