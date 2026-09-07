@@ -71,6 +71,9 @@ public struct ActionDocument: Codable, Equatable, Sendable {
     public func action(for slot: GestureSlot) -> ActionDefinition? {
         guard let id = bindings[slot.rawValue], var action = actions.first(where: { $0.id == id }) else { return nil }
         if action.typeID == "script", let script = script(for: action) { action.name = script.name }
+        if action.typeID == "media", let operation = action.parameters["operation"].flatMap(MediaOperation.init(rawValue:)) {
+            action.name = operation.title
+        }
         return action
     }
     public func script(for action: ActionDefinition) -> ScriptRecord? {

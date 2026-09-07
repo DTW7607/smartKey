@@ -20,7 +20,7 @@ struct DeviceSetupView: View {
         if model.stage == .choosingType { return "监测到设备插入" }
         if choosingOutput { return "为智键选择音频输出" }
         if model.stage == .applying { return "正在切换音频输出" }
-        if audioMode { return model.error == nil ? "正在切换到耳机" : "无法切换到耳机" }
+        if audioMode { return model.error == nil ? "正在切换到音频设备" : "无法切换到音频设备" }
         return model.stage == .remoteError ? "智键暂时无法连接" : "正在连接智键"
     }
 
@@ -106,43 +106,48 @@ struct DeviceSetupView: View {
         .padding(12)
     }
 
-    @ViewBuilder
     private func typeChoice(_ choice: DeviceTypeChoice, title: String,
                             symbol: String, action: @escaping () -> Void) -> some View {
-        if model.preferredChoice == choice {
-            deviceChoice(title, symbol: symbol, preferred: true, action: action)
-                .keyboardShortcut(.defaultAction)
-        } else {
-            deviceChoice(title, symbol: symbol, action: action)
-        }
+        let preferred = model.preferredChoice == choice
+        return deviceChoice(title, symbol: symbol, preferred: preferred, action: action)
+            .background {
+                if preferred {
+                    Button(action: action) { EmptyView() }
+                        .keyboardShortcut(.defaultAction)
+                        .focusable(false)
+                        .focusEffectDisabled()
+                        .accessibilityHidden(true)
+                }
+            }
     }
 
     private func deviceChoice(_ title: String, symbol: String,
                               preferred: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 7) {
-                Image(systemName: symbol).font(.system(size: 23))
-                Text(title).font(.system(size: 14, weight: .semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(preferred ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor),
-                        in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(preferred ? Color.accentColor : .primary.opacity(0.1), lineWidth: preferred ? 2 : 1))
-            .overlay(alignment: .topTrailing) {
-                if preferred && model.hasAutomaticChoice {
-                    Text("\(model.remainingSeconds)")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .monospacedDigit().foregroundStyle(Color.accentColor)
-                        .padding(8)
-                        .accessibilityLabel("\(model.remainingSeconds) 秒后选择\(title)")
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+        VStack(spacing: 7) {
+            Image(systemName: symbol).font(.system(size: 23))
+            Text(title).font(.system(size: 14, weight: .semibold))
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(preferred ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(preferred ? Color.accentColor : .primary.opacity(0.1), lineWidth: preferred ? 2 : 1))
+        .overlay(alignment: .topTrailing) {
+            if preferred && model.hasAutomaticChoice {
+                Text("\(model.remainingSeconds)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(Color.accentColor)
+                    .padding(8)
+                    .accessibilityLabel("\(model.remainingSeconds) 秒后选择\(title)")
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel("选择\(title)")
+        .accessibilityAction(.default, action)
     }
 }
 

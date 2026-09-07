@@ -54,6 +54,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
                                               choiceStore: DeviceChoiceStore())
     private var setupPanel: PopupPanel!
     private var setupTimer: Timer?
+    private var settingsOpen = false
     private var insertionReleaseWork: DispatchWorkItem?
     private var insertionFinishWork: DispatchWorkItem?
 
@@ -140,7 +141,16 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             let actions = try ActionCoordinator(configuration: mask, directory: directory)
             self.actions = actions
             settingsWindow = SettingsWindowController(coordinator: actions)
-            if !AppRunMode.preview { actions.onReconfigure = { [weak self] in self?.reconfigureDevice() } }
+            settingsWindow?.onOpen = { [weak self] in self?.settingsOpen = true; self?.layoutSetup() }
+            settingsWindow?.onClose = { [weak self] in self?.settingsOpen = false; self?.layoutSetup() }
+            if !AppRunMode.preview {
+                actions.onChooseAudioDevice = { [weak self] in
+                    self?.setup.chooseAudioDevice(); self?.layoutSetup(); self?.refreshMenu()
+                }
+                actions.onChooseSmartKey = { [weak self] in
+                    self?.setup.chooseSmartKey(); self?.layoutSetup(); self?.refreshMenu()
+                }
+            }
             actions.onBindingsChanged = { [weak self] in self?.applySmartKeyTiming(); self?.refreshMenu() }
             actions.onFeedback = { [weak self] execution in self?.showExecution(execution) }
             actions.$isSuspended.sink { [weak self] suspended in if suspended { self?.service.resetPendingGesture() } }.store(in: &actionCancellables)
@@ -161,7 +171,12 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             self.layoutSetup()
             self.refreshMenu()
         }
-        setup.onInsertion = { [weak self] in self?.animateInsertion() }
+        setup.onInsertion = { [weak self] in
+            self?.animateInsertion()
+            if self?.settingsOpen == true {
+                UserDefaults.standard.set(SettingsSection.general.rawValue, forKey: "smartKey.settings.section")
+            }
+        }
         service.onJackChange = { [weak self] connected in
             self?.applyOnMain { delegate in
                 if !connected { delegate.cancelInsertionAnimation() }
@@ -203,7 +218,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         setup.audioChanged(service.audio)
         service.start()
         let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.setup.tick() }
+            MainActor.assumeIsolated {
+                self?.setup.tick()
+                self?.publishSetup()
+            }
         }
         setupTimer = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -246,7 +264,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func showExecution(_ execution: ActionExecution) {
         guard !AppRunMode.preview, actions?.isSuspended == false else { return }
-        if let bubble = executionBubbles[execution.id] { bubble.update(symbol: execution.state.symbol, status: execution.state.title); return }
+        if let bubble = executionBubbles[execution.id] {
+            bubble.update(symbol: execution.state == .succeeded ? "" : execution.state.symbol, status: execution.state.title)
+            return
+        }
         // A completed action that has since been unbound should not create a new HUD.
         if execution.state != .running, actions?.store.document.actions.contains(where: { $0.id == execution.action.id }) != true { return }
         guard let screen = currentScreen() else { return }
@@ -257,7 +278,8 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             rect: NSRect(origin: .zero, size: config.layout.panelSize),
             style: style, window: window)
         let bubble = GestureBubble(panel: overlay, config: config, mask: mask, text: execution.action.name)
-        bubble.update(symbol: execution.state.symbol, status: execution.state.title)
+        let symbol = execution.state == .succeeded ? "" : execution.state.symbol
+        bubble.update(symbol: symbol, status: execution.state.title)
         executionBubbles[execution.id] = bubble
         bubbles.append(bubble)
         bubble.start(on: screen) { [weak self, weak bubble] in
@@ -291,7 +313,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private enum MenuTag: Int {
         case header = 1
-        case reconfigure = 2
         case login = 3
         case pause = 4
     }
@@ -300,20 +321,18 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let header = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        header.isEnabled = false
+        header.isEnabled = true
+        header.isHidden = false
+        header.target = nil
+        header.action = nil
         header.tag = MenuTag.header.rawValue
         menu.addItem(header)
-        let reconfigure = item("重新配置设备…", #selector(reconfigureDevice))
-        reconfigure.tag = MenuTag.reconfigure.rawValue
-        menu.addItem(reconfigure)
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
         let pause = item("暂停动作", #selector(toggleActions)); pause.tag = MenuTag.pause.rawValue; menu.addItem(pause)
-        if LoginItem.isAvailable {
-            let login = item("登录时打开", #selector(toggleLoginItem))
-            login.tag = MenuTag.login.rawValue
-            menu.addItem(login)
-        }
+        let login = item("登录时打开", #selector(toggleLoginItem))
+        login.tag = MenuTag.login.rawValue
+        menu.addItem(login)
         menu.addItem(item("退出", #selector(quit), key: "q"))
         status.menu = menu
     }
@@ -336,18 +355,19 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenu() {
-        actions?.deviceStatus = AppRunMode.preview ? "设置预览 · 不连接硬件" : setupMenuText
+        publishSetup()
+        actions?.deviceStatus = AppRunMode.preview ? "等待连接" : connectionLabel
+        actions?.deviceConnected = !AppRunMode.preview && setup.stage != .disconnected
         guard let menu = status?.menu else { return }
         if let pause = menu.item(withTag: MenuTag.pause.rawValue) { pause.title = actions?.store.document.paused == true ? "恢复动作" : "暂停动作"; pause.isEnabled = actions != nil }
         if let header = menu.item(withTag: MenuTag.header.rawValue) {
-            header.title = "智键 · \(setupMenuText)"
+            let title = AppRunMode.preview ? "等待连接" : connectionLabel
+            header.attributedTitle = NSAttributedString(string: title, attributes: [
+                .foregroundColor: NSColor.labelColor,
+                .font: NSFont.menuFont(ofSize: 0),
+            ])
+            header.isEnabled = true
             menu.itemChanged(header)
-        }
-        if let reconfigure = menu.item(withTag: MenuTag.reconfigure.rawValue) {
-            let connected = setup.stage != .disconnected
-            reconfigure.isHidden = !connected
-            reconfigure.isEnabled = connected
-            menu.itemChanged(reconfigure)
         }
         if let login = menu.item(withTag: MenuTag.login.rawValue) {
             login.state = LoginItem.isEnabled ? .on : .off
@@ -355,27 +375,19 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private var setupMenuText: String {
+    private var connectionLabel: String {
         switch setup.stage {
-        case .disconnected: return "等待 3.5 mm 设备"
-        case .choosingType: return "请选择设备类型"
-        case .audioDevice: return "音频设备模式"
-        case .choosingOutput: return setup.error == nil ? "请选择音频输出" : "配置需要处理"
-        case .applying, .applyingAudio: return "正在切换音频输出"
-        case .audioError: return "耳机输出切换失败"
-        case .remoteError: return "线控连接需要处理"
-        case .paused: return "智键已停用"
-        case .activating, .active: return seizeMenuText(service.seizeStatus)
+        case .disconnected, .choosingType, .paused: return "等待连接"
+        case .audioDevice, .applyingAudio, .audioError: return "音频设备"
+        case .choosingOutput, .applying, .activating, .active, .remoteError: return "智键"
         }
     }
 
-    private func seizeMenuText(_ status: SmartKeySeizeStatus) -> String {
-        switch status {
-        case .idle: return "HID 未启动"
-        case .waiting: return "等待插孔设备"
-        case .seized: return "已启用"
-        case .failed: return "独占失败"
-        }
+    private func publishSetup() {
+        guard let actions else { return }
+        if actions.remainingSeconds != setup.remainingSeconds { actions.remainingSeconds = setup.remainingSeconds }
+        if actions.hasAutomaticChoice != setup.hasAutomaticChoice { actions.hasAutomaticChoice = setup.hasAutomaticChoice }
+        if actions.preferredChoice != setup.preferredChoice { actions.preferredChoice = setup.preferredChoice }
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -403,7 +415,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func layoutSetup() {
         guard setupPanel != nil else { return }
-        guard setup.isPresented else {
+        if settingsOpen || !setup.isPresented {
             setupPanel.orderOut(nil)
             return
         }
@@ -476,11 +488,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     @objc private func screensChanged() {
         dismissGestureBubble()
         layout()
-    }
-
-    @objc private func reconfigureDevice() {
-        setup.reopen()
-        layoutSetup()
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {

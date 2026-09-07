@@ -9,11 +9,16 @@ final class ActionCoordinator: ObservableObject {
     let dispatcher: ActionDispatcher
     let configuration: RuntimeConfiguration
     @Published var notice: String?
-    @Published var deviceStatus = "等待设备"
+    @Published var deviceStatus = "等待连接"
+    @Published var deviceConnected = false
+    @Published var remainingSeconds = 0
+    @Published var hasAutomaticChoice = false
+    @Published var preferredChoice = DeviceTypeChoice.smartKey
     @Published var isSuspended = false
     @Published var lastExecution: ActionExecution?
     @Published var testingKeyboard = false
-    var onReconfigure: (() -> Void)?
+    var onChooseAudioDevice: (() -> Void)?
+    var onChooseSmartKey: (() -> Void)?
     var onBindingsChanged: (() -> Void)?
     var onFeedback: ((ActionExecution) -> Void)?
     private var cancellables = Set<AnyCancellable>()
@@ -119,6 +124,7 @@ final class ActionCoordinator: ObservableObject {
     func perform(_ work: () throws -> Void) { do { try work() } catch { notice = error.localizedDescription } }
     func bind(_ action: ActionDefinition?, to slot: GestureSlot) { perform { try store.bind(action, to: slot); bindingsChanged() } }
     func saveScript(_ script: ScriptRecord) { perform { try store.saveScript(script); refresh() } }
+    func moveScripts(from offsets: IndexSet, to destination: Int) { perform { try store.moveScripts(from: offsets, to: destination) } }
     func uniqueName(_ suggested: String) -> String {
         let base = String(suggested.trimmingCharacters(in: .whitespacesAndNewlines).prefix(8))
         let candidate = base.isEmpty ? "新脚本" : base
@@ -130,7 +136,7 @@ final class ActionCoordinator: ObservableObject {
     }
     @discardableResult
     func createScript() -> ScriptRecord? {
-        let script = ScriptRecord(name: uniqueName("新脚本"), summary: "在默认应用中编辑，保存后即可试运行。")
+        let script = ScriptRecord(name: uniqueName("新脚本"))
         do {
             try library.createFile(for: script, content: Data("#!/bin/zsh\nprintf '你好，智键\\n'\n".utf8))
             do { try store.saveScript(script) } catch { try? library.removeFile(for: script); throw error }

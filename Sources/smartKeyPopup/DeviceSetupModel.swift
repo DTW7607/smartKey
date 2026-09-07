@@ -115,7 +115,7 @@ final class DeviceSetupModel: ObservableObject {
     }
 
     func chooseSmartKey() {
-        guard connected, stage == .choosingType else { return }
+        guard connected else { return }
         guard backend.isJackConnected else { jackChanged(false); return }
         rememberChoice(.smartKey)
         cancelPendingPresentation()

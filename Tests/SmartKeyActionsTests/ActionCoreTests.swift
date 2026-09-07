@@ -149,6 +149,27 @@ struct ActionCoreTests {
     }
 
     @Test
+    func savingScriptKeepsOrderAndMoveReorders() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { removeTemporaryDirectory(directory) }
+        let store = try ActionStore(directory: directory)
+        let first = ScriptRecord(name: "甲")
+        let second = ScriptRecord(name: "乙")
+        let third = ScriptRecord(name: "丙")
+        try store.saveScript(first)
+        try store.saveScript(second)
+        try store.saveScript(third)
+
+        var renamed = second
+        renamed.name = "中"
+        try store.saveScript(renamed)
+        #expect(store.document.scripts.map(\.name) == ["甲", "中", "丙"])
+
+        try store.moveScripts(from: IndexSet(integer: 2), to: 0)
+        #expect(store.document.scripts.map(\.name) == ["丙", "甲", "中"])
+    }
+
+    @Test
     func damagedConfigRecoversFromBackupAndNewSchemaIsNeverDowngraded() throws {
         let directory = try makeTemporaryDirectory()
         defer { removeTemporaryDirectory(directory) }

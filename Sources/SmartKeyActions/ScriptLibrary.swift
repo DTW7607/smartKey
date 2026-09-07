@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import UniformTypeIdentifiers
 
 private let scriptMaximumBytes = 1_048_576
 // JSON escaping can expand a valid 1 MiB source (for example, a source made
@@ -181,29 +182,28 @@ public final class ScriptLibrary: ObservableObject {
         try writeAtomically(output, to: target)
     }
 
-    /// Opens the managed file through the system's current default
-    /// application.  This does not alter Launch Services associations.
+    /// Opens the managed file in a text editor.  `.sh` defaults often launch
+    /// Terminal and would execute the script; plain-text editors do not.
     public func openExternally(_ record: ScriptRecord) throws {
         let source = fileURL(for: record)
         guard isRegularFile(source) else {
             throw ActionError("脚本文件不存在或不是普通文件。")
         }
-        guard NSWorkspace.shared.urlForApplication(toOpen: source) != nil else {
-            throw ActionError("没有找到可以打开脚本的默认应用。")
+        guard let editor = Self.textEditorURL() else {
+            throw ActionError("没有找到可以打开脚本的文本编辑应用。")
         }
-        guard NSWorkspace.shared.open(source) else {
-            throw ActionError("无法用默认应用打开脚本。")
-        }
+        NSWorkspace.shared.open([source], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration())
     }
 
-    /// Returns the localized name of the current default application, if one
-    /// is registered for this file type.
+    /// Localized name of the text editor used by `openExternally`.
     public func defaultApplicationName(for record: ScriptRecord) -> String? {
-        let source = fileURL(for: record)
-        guard let application = NSWorkspace.shared.urlForApplication(toOpen: source) else {
-            return nil
-        }
-        return fileManager.displayName(atPath: application.path)
+        guard isRegularFile(fileURL(for: record)), let editor = Self.textEditorURL() else { return nil }
+        return fileManager.displayName(atPath: editor.path)
+    }
+
+    public static func textEditorURL() -> URL? {
+        NSWorkspace.shared.urlForApplication(toOpen: UTType.plainText)
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit")
     }
 
     /// Asks Finder to reveal the managed file.  NSWorkspace has no throwing

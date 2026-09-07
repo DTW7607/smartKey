@@ -112,6 +112,21 @@ final class ScriptLibraryTests: XCTestCase {
         }
     }
 
+    func testDefaultOpenApplicationIsATextEditor() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = try ScriptLibrary(directory: root)
+        let record = ScriptRecord(name: "编辑")
+        try library.createFile(for: record, content: Data("#!/bin/zsh\n".utf8))
+        let name = try XCTUnwrap(library.defaultApplicationName(for: record))
+        XCTAssertFalse(name.localizedCaseInsensitiveContains("Terminal"))
+        XCTAssertFalse(name.contains("终端"))
+        XCTAssertEqual(
+            library.defaultApplicationName(for: record),
+            FileManager.default.displayName(atPath: try XCTUnwrap(ScriptLibrary.textEditorURL()).path)
+        )
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("smartkey-script-library-\(UUID().uuidString)", isDirectory: true)

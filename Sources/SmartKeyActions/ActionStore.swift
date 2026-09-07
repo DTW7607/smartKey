@@ -64,11 +64,19 @@ public final class ActionStore: ObservableObject {
 
     public func saveScript(_ script: ScriptRecord) throws {
         try change { next in
-            next.scripts.removeAll { $0.id == script.id }; next.scripts.append(script)
+            if let index = next.scripts.firstIndex(where: { $0.id == script.id }) {
+                next.scripts[index] = script
+            } else {
+                next.scripts.append(script)
+            }
             for index in next.actions.indices where next.actions[index].typeID == "script" && next.actions[index].parameters["scriptID"] == script.id.uuidString {
                 next.actions[index].name = script.name
             }
         }
+    }
+
+    public func moveScripts(from offsets: IndexSet, to destination: Int) throws {
+        try change { next in next.scripts.move(fromOffsets: offsets, toOffset: destination) }
     }
 
     public func references(to script: ScriptRecord) -> [GestureSlot] {

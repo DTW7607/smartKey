@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import SmartKeyActions
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general = "通用", bindings = "动作绑定", scripts = "脚本管理"
+    case general = "通用", bindings = "动作配置", scripts = "脚本管理"
     var id: String { rawValue }
     var symbol: String { switch self { case .general: return "gearshape"; case .bindings: return "button.programmable"; case .scripts: return "terminal" } }
 }
@@ -17,14 +17,13 @@ struct SmartKeySettingsView: View {
         Binding(get: { SettingsSection(rawValue: savedSection) ?? .bindings }, set: { if let value = $0 { savedSection = value.rawValue } })
     }
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             List(SettingsSection.allCases, selection: selection) { section in
-                Label(section.rawValue, systemImage: section.symbol).tag(section)
-                    .padding(.vertical, 5)
+                Label(section.rawValue, systemImage: section.symbol).tag(section).padding(.vertical, 5)
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
+            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 180)
             .safeAreaInset(edge: .bottom) {
-                Label(coordinator.store.document.paused ? "动作已暂停" : "智键", systemImage: coordinator.store.document.paused ? "pause.circle" : "button.programmable")
+                Label(coordinator.deviceStatus, systemImage: coordinator.store.document.paused ? "pause.circle" : "button.programmable")
                     .font(.caption).foregroundStyle(.secondary).padding()
             }
         } detail: {
@@ -45,29 +44,26 @@ struct SmartKeySettingsView: View {
             }
             .navigationTitle(savedSection)
         }
+        .toolbar(removing: .sidebarToggle)
         .onAppear { coordinator.refresh() }
-        .frame(minWidth: 760, minHeight: 480)
+        .frame(minWidth: 800, idealWidth: 800, maxWidth: 800, minHeight: 520)
     }
 }
 
 @MainActor
 struct GeneralSettingsView: View {
     @ObservedObject var coordinator: ActionCoordinator
-    @ObservedObject private var configuration: RuntimeConfiguration
-    init(coordinator: ActionCoordinator) { self.coordinator = coordinator; self.configuration = coordinator.configuration }
     var body: some View {
         Form {
             Section("设备") {
                 LabeledContent("连接状态", value: coordinator.deviceStatus)
-                Button("重新配置设备…") { coordinator.onReconfigure?() }.disabled(coordinator.onReconfigure == nil)
+                HStack(spacing: 12) {
+                    deviceModeCard("音频设备", symbol: "headphones", choice: .audioDevice,
+                                   action: { coordinator.onChooseAudioDevice?() })
+                    deviceModeCard("智键", symbol: "button.programmable", choice: .smartKey,
+                                   action: { coordinator.onChooseSmartKey?() })
+                }.padding(.vertical, 4)
                 Toggle("暂停动作", isOn: Binding(get: { coordinator.store.document.paused }, set: { coordinator.setPaused($0) }))
-                Text("暂停后不执行按键动作，保留当前设备模式与音频保护。").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("手势") {
-                LabeledContent("双击识别", value: coordinator.store.document.doubleClickEnabled ? "已开启 · 由绑定自动管理" : "已关闭 · 双击未绑定")
-                timing("长按时长", key: "longPressMs", value: configuration.longPressMs, range: 300...1500)
-                timing("双击判定窗口", key: "doubleClickMs", value: configuration.doubleClickMs, range: 150...800)
-                Text("双击绑定动作后，单击需要等待判定窗口。长按到达阈值时执行一次。").font(.caption).foregroundStyle(.secondary)
             }
             Section("权限与启动") {
                 LabeledContent("辅助功能", value: KeyboardActionProvider.isAuthorized ? "已允许" : "尚未允许")
@@ -75,82 +71,160 @@ struct GeneralSettingsView: View {
                     Button("授权键盘与媒体控制…") { KeyboardActionProvider.requestAuthorization(); coordinator.openPermissions() }
                     Button("刷新状态") { coordinator.refresh() }
                 }
-                if LoginItem.isAvailable {
-                    Toggle("登录时打开", isOn: Binding(get: { LoginItem.isEnabled }, set: { LoginItem.setEnabled($0); coordinator.objectWillChange.send() }))
-                } else { Text("安装到 Applications 后可以设置登录时打开。").font(.caption).foregroundStyle(.secondary) }
+                Toggle("登录时打开", isOn: Binding(get: { LoginItem.isEnabled }, set: { LoginItem.setEnabled($0); coordinator.objectWillChange.send() }))
             }
             Section("关于") { LabeledContent("智键", value: "首版 · macOS 26"); Text("一个实体按键，连接你的常用操作。").foregroundStyle(.secondary) }
         }.formStyle(.grouped)
     }
-    private func timing(_ title: String, key: String, value: CGFloat, range: ClosedRange<Double>) -> some View {
-        HStack {
-            Text(title); Spacer()
-            Text("\(Int(value)) ms").monospacedDigit().foregroundStyle(.secondary)
-            Stepper("调整\(title)", value: Binding(get: { Double(value) }, set: { next in coordinator.perform { try configuration.write([key: next]) } }), in: range, step: 50)
-                .labelsHidden().fixedSize()
+    private func isSelected(_ choice: DeviceTypeChoice) -> Bool {
+        if coordinator.hasAutomaticChoice { return coordinator.preferredChoice == choice }
+        switch choice {
+        case .audioDevice: return coordinator.deviceStatus == "音频设备"
+        case .smartKey: return coordinator.deviceStatus == "智键"
         }
+    }
+    private func deviceModeCard(_ title: String, symbol: String, choice: DeviceTypeChoice, action: @escaping () -> Void) -> some View {
+        let selected = isSelected(choice)
+        let enabled = coordinator.deviceConnected && (choice == .audioDevice ? coordinator.onChooseAudioDevice : coordinator.onChooseSmartKey) != nil
+        return VStack(spacing: 7) {
+            Image(systemName: symbol).font(.system(size: 23))
+            Text(title).font(.system(size: 14, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(selected ? Color.accentColor.opacity(0.09) : Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(selected ? Color.accentColor : .primary.opacity(0.1), lineWidth: selected ? 2 : 1))
+        .overlay(alignment: .topTrailing) {
+            if selected && coordinator.hasAutomaticChoice {
+                Text("\(coordinator.remainingSeconds)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(Color.accentColor)
+                    .padding(8)
+            }
+        }
+        .opacity(enabled ? 1 : 0.45)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture { if enabled { action() } }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(title)
     }
 }
 
 @MainActor
 struct BindingsSettingsView: View {
     @ObservedObject var coordinator: ActionCoordinator
+    @ObservedObject private var configuration: RuntimeConfiguration
     @State private var editing: GestureSlot?
+    @State private var longPressText = ""
+    @State private var doubleClickText = ""
+    @FocusState private var focusedTiming: String?
+    init(coordinator: ActionCoordinator) { self.coordinator = coordinator; self.configuration = coordinator.configuration }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("为每种手势选择一个动作。名称会显示在触发气泡中。").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(GestureSlot.allCases) { slot in
+                    let action = coordinator.store.document.action(for: slot)
                     GroupBox {
                         HStack(spacing: 18) {
                             Image(systemName: slot == .longPress ? "hand.point.up.left.fill" : "hand.tap")
                                 .font(.title2).frame(width: 38).foregroundStyle(.tint)
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(slot.title).font(.headline)
-                                if let action = coordinator.store.document.action(for: slot) {
+                                if let action {
                                     Text(action.name).font(.title3.weight(.medium))
                                     Text(actionSummary(action)).font(.caption).foregroundStyle(.secondary)
                                 } else { Text("无").foregroundStyle(.secondary) }
                             }
                             Spacer()
-                            if let action = coordinator.store.document.action(for: slot) {
-                                Button("测试") { coordinator.test(action) }.disabled(coordinator.testingKeyboard)
+                            if action != nil {
+                                Button("测试") { if let action { coordinator.test(action) } }.disabled(coordinator.testingKeyboard)
                             }
-                            Menu {
-                                Button("无") { coordinator.bind(nil, to: slot) }
-                                Divider()
-                                Button("选择或编辑动作…") { editing = slot }
-                                if !coordinator.store.document.scripts.isEmpty {
-                                    Menu("执行脚本") {
-                                        ForEach(coordinator.store.document.scripts) { script in
-                                            Button(script.name) { coordinator.bind(ActionDefinition(typeID: "script", name: script.name, parameters: ["scriptID": script.id.uuidString]), to: slot) }
-                                        }
-                                    }
-                                }
-                            } label: { Label("选择动作", systemImage: "slider.horizontal.3") }
-                            .menuStyle(.borderlessButton).fixedSize().padding(9).glassEffect(.regular, in: .capsule)
+                            Button { editing = slot } label: {
+                                Label("选择动作", systemImage: "slider.horizontal.3")
+                                    .foregroundStyle(.primary)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
+                            .glassEffect(.regular, in: .capsule)
                         }.padding(12)
                     }
+                    ZStack(alignment: .topLeading) {
+                        Color.clear.frame(height: 36)
+                        if slot == .doubleClick, action != nil {
+                            Label("启用双击动作会影响按键的响应速度", systemImage: "info.circle")
+                                .font(.callout).foregroundStyle(.secondary)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .frame(height: 36)
                 }
-                Label(coordinator.store.document.doubleClickEnabled ? "双击已开启，单击需等待 \(Int(coordinator.configuration.doubleClickMs)) ms。" : "双击未绑定，单击松开即判定。", systemImage: "info.circle")
-                    .font(.callout).foregroundStyle(.secondary)
+                GroupBox {
+                    VStack(spacing: 10) {
+                        timing("双击判定窗口", key: "doubleClickMs", text: $doubleClickText, defaultValue: 450, range: 150...800)
+                        Divider()
+                        timing("长按时长", key: "longPressMs", text: $longPressText, defaultValue: 450, range: 300...1500)
+                    }.padding(8)
+                }
                 if let execution = coordinator.lastExecution { ExecutionResultView(execution: execution) }
             }.padding(28)
         }
         .sheet(item: $editing) { slot in BindingEditor(coordinator: coordinator, slot: slot) }
+        .onAppear { longPressText = displayMs(configuration.longPressMs); doubleClickText = displayMs(configuration.doubleClickMs) }
+        .onChange(of: configuration.longPressMs) { _, value in if focusedTiming != "longPressMs" { longPressText = displayMs(value) } }
+        .onChange(of: configuration.doubleClickMs) { _, value in if focusedTiming != "doubleClickMs" { doubleClickText = displayMs(value) } }
     }
     private func actionSummary(_ action: ActionDefinition) -> String {
         switch action.typeID { case "keyboard": return "键盘 · \(action.parameters["display"] ?? "组合键")"; case "media": return "多媒体"; case "script": return "脚本 · 后台运行"; default: return "当前版本不支持此类型" }
+    }
+    private func displayMs(_ value: CGFloat) -> String { String(Int(value)) }
+    private func timing(_ title: String, key: String, text: Binding<String>, defaultValue: Double, range: ClosedRange<Double>) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("", text: text, prompt: Text(String(Int(defaultValue))))
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .font(.body.monospacedDigit())
+                .frame(width: 64)
+                .focused($focusedTiming, equals: key)
+                .onSubmit { commitTiming(key: key, text: text.wrappedValue, defaultValue: defaultValue, range: range) }
+            Text("ms").foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 4)
+        .onChange(of: focusedTiming) { previous, _ in
+            if previous == key { commitTiming(key: key, text: text.wrappedValue, defaultValue: defaultValue, range: range) }
+        }
+    }
+    private func commitTiming(key: String, text: String, defaultValue: Double, range: ClosedRange<Double>) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed: Double
+        if trimmed.isEmpty {
+            parsed = defaultValue
+        } else if let value = Double(trimmed), value.isFinite {
+            parsed = min(max(value.rounded(), range.lowerBound), range.upperBound)
+        } else {
+            if key == "longPressMs" { longPressText = displayMs(configuration.longPressMs) }
+            else { doubleClickText = displayMs(configuration.doubleClickMs) }
+            return
+        }
+        let current = key == "longPressMs" ? Double(configuration.longPressMs) : Double(configuration.doubleClickMs)
+        if parsed != current { coordinator.perform { try configuration.write([key: parsed]) } }
+        if key == "longPressMs" { longPressText = displayMs(CGFloat(parsed)) }
+        else { doubleClickText = displayMs(CGFloat(parsed)) }
     }
 }
 
 @MainActor
 private struct BindingEditor: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var coordinator: ActionCoordinator
     let slot: GestureSlot
     @Environment(\.dismiss) private var dismiss
-    @State private var type = "keyboard"
+    @State private var type = "none"
     @State private var name = "键盘操作"
     @State private var keyCode: UInt16 = 0
     @State private var modifiers: UInt64 = 0
@@ -164,23 +238,18 @@ private struct BindingEditor: View {
             Text("\(slot.title)动作").font(.title2.bold())
             Form {
                 Picker("动作类型", selection: $type) {
-                    Text("键盘功能").tag("keyboard"); Text("多媒体功能").tag("media"); Text("执行脚本").tag("script")
-                }.onChange(of: type) { _, value in name = value == "media" ? operation.title : "键盘操作" }
-                if type != "script" {
-                    TextField("动作名称", text: $name)
-                    Text("\(name.count)/8 个字符").font(.caption).foregroundStyle(name.count > 8 ? .red : .secondary)
+                    Text("无").tag("none"); Text("键盘功能").tag("keyboard"); Text("多媒体功能").tag("media"); Text("执行脚本").tag("script")
                 }
                 if type == "keyboard" {
+                    TextField("动作名称", text: $name)
+                    Text("\(name.count)/8 个字符").font(.caption).foregroundStyle(name.count > 8 ? .red : .secondary)
                     KeyRecorder(keyCode: $keyCode, modifiers: $modifiers, display: $keyDisplay)
-                    Text("录制一个单键或组合键，按 Escape 取消录制。").font(.caption).foregroundStyle(.secondary)
                 } else if type == "media" {
                     Picker("操作", selection: $operation) { ForEach(MediaOperation.allCases) { Text($0.title).tag($0) } }
-                        .onChange(of: operation) { _, value in name = value.title }
                     if operation == .volumeUp || operation == .volumeDown {
                         Stepper("音量步长：\(Int(step))%", value: $step, in: 1...100)
                     }
-                    Text("播放目标由系统媒体路由决定。输出静音不影响麦克风。").font(.caption).foregroundStyle(.secondary)
-                } else {
+                } else if type == "script" {
                     Picker("脚本", selection: $scriptID) {
                         Text("请选择").tag(nil as UUID?)
                         ForEach(coordinator.store.document.scripts) { Text($0.name).tag(Optional($0.id)) }
@@ -188,12 +257,12 @@ private struct BindingEditor: View {
                     if coordinator.store.document.scripts.isEmpty { Text("先到脚本管理中添加脚本。").foregroundStyle(.secondary) }
                 }
             }
+            .animation(nil, value: type)
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("保存绑定") { save() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
             }
         }.padding(26).frame(width: 440)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: type)
             .onAppear { load() }
     }
     private func load() {
@@ -207,15 +276,18 @@ private struct BindingEditor: View {
     }
     private func save() {
         do {
+            if type == "none" {
+                try coordinator.store.bind(nil, to: slot); coordinator.refresh(); dismiss(); return
+            }
             let action: ActionDefinition
             if type == "script" {
                 guard let script = coordinator.store.document.scripts.first(where: { $0.id == scriptID }) else { throw ActionError("请选择一个脚本。") }
                 action = ActionDefinition(typeID: type, name: script.name, parameters: ["scriptID": script.id.uuidString])
+            } else if type == "media" {
+                action = ActionDefinition(typeID: type, name: operation.title, parameters: ["operation": operation.rawValue, "step": String(step)])
             } else {
                 let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines); try ActionNames.validate(trimmed)
-                action = ActionDefinition(typeID: type, name: trimmed, parameters: type == "keyboard" ?
-                    ["keyCode": String(keyCode), "modifiers": String(modifiers), "display": keyDisplay] :
-                    ["operation": operation.rawValue, "step": String(step)])
+                action = ActionDefinition(typeID: type, name: trimmed, parameters: ["keyCode": String(keyCode), "modifiers": String(modifiers), "display": keyDisplay])
             }
             try coordinator.store.bind(action, to: slot); coordinator.refresh(); dismiss()
         } catch { self.error = error.localizedDescription }

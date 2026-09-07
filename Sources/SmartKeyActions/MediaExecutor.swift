@@ -5,8 +5,8 @@ public enum MediaOperation: String, CaseIterable, Identifiable, Sendable {
     case playPause, previous, next, volumeUp, volumeDown, mute
     public var id: String { rawValue }
     public var title: String {
-        switch self { case .playPause: return "播放暂停"; case .previous: return "上一首"; case .next: return "下一首"
-        case .volumeUp: return "音量增加"; case .volumeDown: return "音量减少"; case .mute: return "输出静音" }
+        switch self { case .playPause: return "播放/暂停"; case .previous: return "上一首"; case .next: return "下一首"
+        case .volumeUp: return "音量+"; case .volumeDown: return "音量-"; case .mute: return "静音" }
     }
 }
 
