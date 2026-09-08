@@ -561,7 +561,7 @@ struct DeviceSetupTests {
         try """
             # factory
             sidePt = 9
-            bubbleRetractCooldownMs = 120
+            bubbleRetriggerMs = 120
             """.write(to: factory, atomically: true, encoding: .utf8)
         try """
             # user
@@ -571,9 +571,39 @@ struct DeviceSetupTests {
         let text = try String(contentsOf: url, encoding: .utf8)
         let settings = RuntimeSettings.parse(text)
         #expect(settings.sidePt == 5)
-        #expect(settings.bubbleRetractCooldownMs == 120)
-        #expect(text.contains("bubbleRetractCooldownMs = 120"))
+        #expect(settings.bubbleRetriggerMs == 120)
+        #expect(text.contains("bubbleRetriggerMs = 120"))
         #expect(text.contains("# factory"))
+    }
+
+    @Test func bubbleRetriggerMsDefaultsAndDropsLegacyRetractCooldown() throws {
+        #expect(RuntimeSettings().bubbleRetriggerMs == 20)
+        #expect(RuntimeSettings.parse("bubbleRetriggerMs = 50").bubbleRetriggerMs == 50)
+        #expect(RuntimeSettings.parse("bubbleRetriggerMs = -1").bubbleRetriggerMs == 20)
+        #expect(RuntimeSettings.parse("bubbleRetractCooldownMs = -120").bubbleRetriggerMs == 20)
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let factory = dir.appendingPathComponent("factory.conf")
+        let user = dir.appendingPathComponent("user.conf")
+        try """
+            # factory
+            sidePt = 9
+            bubbleRetriggerMs = 20
+            """.write(to: factory, atomically: true, encoding: .utf8)
+        try """
+            # user
+            sidePt = 5
+            bubbleRetractCooldownMs = -120
+            """.write(to: user, atomically: true, encoding: .utf8)
+        let url = RuntimeConfiguration.ensureFile(at: user, factory: factory)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let settings = RuntimeSettings.parse(text)
+        #expect(settings.sidePt == 5)
+        #expect(settings.bubbleRetriggerMs == 20)
+        #expect(text.contains("bubbleRetriggerMs = 20"))
+        #expect(!text.contains("bubbleRetractCooldownMs"))
     }
 
     @Test func deviceChoiceStoreRoundTrips() {

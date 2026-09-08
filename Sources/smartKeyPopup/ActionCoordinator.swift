@@ -98,7 +98,7 @@ final class ActionCoordinator: ObservableObject {
         guard !store.document.paused, !isSuspended else { return }
         let document = sessionDocument ?? store.document
         guard !document.paused, let action = document.action(for: slot) else { return }
-        dispatcher.cooldown = max(0, Double(configuration.bubbleHoldMs + configuration.bubbleDisappearMs + configuration.bubbleRetractCooldownMs) / 1000)
+        dispatcher.cooldown = max(0, Double(configuration.bubbleRetriggerMs) / 1000)
         dispatcher.run(action, context: context(for: action, document: document, source: .physical, target: sessionTarget))
     }
     private func context(for action: ActionDefinition, document: ActionDocument, source: ExecutionSource, target: Int32? = nil) -> ActionContext {

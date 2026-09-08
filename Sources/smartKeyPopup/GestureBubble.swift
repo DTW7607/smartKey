@@ -10,6 +10,8 @@ final class GestureBubble {
     private var hideWork: DispatchWorkItem?
     private var motionTimer: Timer?
     private var onFinished: (() -> Void)?
+    private var screen: NSScreen?
+    private var isRetracting = false
     private let content: BubbleContent
 
     init(panel: PopupPanel, config: PopupConfiguration, mask: RuntimeConfiguration, text: String) {
@@ -31,15 +33,27 @@ final class GestureBubble {
     }
 
     func start(on screen: NSScreen, finished: @escaping () -> Void) {
+        self.screen = screen
+        isRetracting = false
         onFinished = finished
         animate(appearing: true, on: screen)
         let hold = max(mask.bubbleHoldMs, 0) / 1000
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, let screen = self.screen else { return }
+            self.isRetracting = true
             self.animate(appearing: false, on: screen) { [weak self] in self?.finish() }
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
+    }
+
+    /// Fly back from the current frame. No-op if already retracting or finished.
+    func retract() {
+        guard onFinished != nil, !isRetracting, let screen else { return }
+        isRetracting = true
+        hideWork?.cancel()
+        hideWork = nil
+        animate(appearing: false, on: screen) { [weak self] in self?.finish() }
     }
 
     func dismiss() {
@@ -97,8 +111,16 @@ final class GestureBubble {
         let duration = reduce ? 0.1 : max((appearing ? mask.bubbleAppearMs : mask.bubbleDisappearMs), 1) / 1000
         let fromOrigin = reduce ? restOrigin(on: screen) : (appearing ? startOrigin(on: screen) : panel.frame.origin)
         let toOrigin = reduce ? restOrigin(on: screen) : (appearing ? restOrigin(on: screen) : startOrigin(on: screen))
-        let fromScale: CGFloat = appearing ? 0.45 : 1
-        let toScale: CGFloat = appearing ? 1 : 0.45
+        let fromScale: CGFloat
+        let toScale: CGFloat
+        if appearing {
+            fromScale = 0.45
+            toScale = 1
+        } else {
+            let current = layer.map { CGFloat($0.transform.m11) } ?? 1
+            fromScale = current > 0 ? current : 1
+            toScale = 0.45
+        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)

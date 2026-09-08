@@ -20,7 +20,7 @@ struct RuntimeSettings: Equatable {
     var bubbleHoldMs: CGFloat = 1000
     var bubbleAppearMs: CGFloat = 300
     var bubbleDisappearMs: CGFloat = 180
-    var bubbleRetractCooldownMs: CGFloat = 200
+    var bubbleRetriggerMs: CGFloat = 20
     var bubbleEndX: CGFloat = -30
     var bubbleEndY: CGFloat = 30
     var doubleClickEnabled: CGFloat = 0
@@ -88,7 +88,7 @@ struct RuntimeSettings: Equatable {
         "bubbleHoldMs": Rule(keyPath: \.bubbleHoldMs, range: 0...86400000),
         "bubbleAppearMs": Rule(keyPath: \.bubbleAppearMs, range: 0...86400000),
         "bubbleDisappearMs": Rule(keyPath: \.bubbleDisappearMs, range: 0...86400000),
-        "bubbleRetractCooldownMs": Rule(keyPath: \.bubbleRetractCooldownMs, range: -86400000...86400000),
+        "bubbleRetriggerMs": Rule(keyPath: \.bubbleRetriggerMs, range: 0...86400000),
         "bubbleEndX": Rule(keyPath: \.bubbleEndX, range: -10000...10000),
         "bubbleEndY": Rule(keyPath: \.bubbleEndY, range: -10000...10000),
         "doubleClickEnabled": Rule(keyPath: \.doubleClickEnabled, range: 0...1),
@@ -116,7 +116,7 @@ struct RuntimeSettings: Equatable {
         "sidePt", "bottomPt", "cornerRadiusPt", "sideLengthPt", "bottomLengthPt",
         "positiveRadiusPt", "negativeRadiusPt", "taperLengthPt",
         "shadowRadiusPt", "shadowOpacity", "appearMs", "disappearMs", "cornerSpeed",
-        "bubbleHoldMs", "bubbleAppearMs", "bubbleDisappearMs", "bubbleRetractCooldownMs",
+        "bubbleHoldMs", "bubbleAppearMs", "bubbleDisappearMs", "bubbleRetriggerMs",
         "bubbleEndX", "bubbleEndY",
         "setupScreenMarginPt", "setupChoiceWidthPt", "setupOutputWidthPt",
         "setupTableHeightPt", "setupCornerRadiusPt",

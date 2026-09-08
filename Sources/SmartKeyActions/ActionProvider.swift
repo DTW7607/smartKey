@@ -95,7 +95,7 @@ public final class ActionDispatcher: ObservableObject {
     @Published public private(set) var executions: [ActionExecution] = []
     public let registry: ActionRegistry
     public var onChange: ((ActionExecution) -> Void)?
-    public var cooldown: TimeInterval = 1.06
+    public var cooldown: TimeInterval = 0.02
     private var nextPhysicalAt: TimeInterval = 0
     private let now: () -> TimeInterval
     public init(registry: ActionRegistry, now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {

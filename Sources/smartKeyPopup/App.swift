@@ -270,6 +270,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         guard !AppRunMode.preview, actions?.isSuspended == false, execution.state == .running else { return }
         if executionBubbles[execution.id] != nil { return }
         guard let screen = currentScreen() else { return }
+        bubbles.forEach { $0.retract() }
         let window = config.window
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
