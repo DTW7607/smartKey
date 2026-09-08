@@ -39,7 +39,7 @@ let action = ActionDefinition(typeID: "example.status", name: "查看状态", pa
 let execution = dispatcher.run(action, context: ActionContext(source: .test))
 ```
 
-名称必须是 1–8 个用户可见字符，且没有首尾空格或控制字符。动作类型和参数版本未知时配置保留，执行失败，不推断其他行为。当前 registry 按类型 ID 注册一个 Provider；重复注册用于显式替换实现。
+名称必须是 1–12 个计数单位（中文占 2 个单位），且没有首尾空格或控制字符。动作类型和参数版本未知时配置保留，执行失败，不推断其他行为。当前 registry 按类型 ID 注册一个 Provider；重复注册用于显式替换实现。
 
 物理事件有低频冷却，试运行绕过该冷却；空动作不进入执行器。所有执行均产生 `ActionExecution`，包含开始/结束时间、结果、状态与取消入口。`verified=false` 表示命令已发送，不能宣称目标业务已完成。脚本退出码非零进入失败状态。
 
@@ -79,3 +79,20 @@ stdout/stderr 分别最多保留 256 KiB，超出仍排空管道并标记截断�
 `./scripts/build-app.sh` 只生成 `.build/release-app/smartKey.app`，不安装、不启动、不抢占硬件。它是本机 ad-hoc 签名构建，不是 Developer ID 公证分发包。
 
 开发预览：运行构建产物并传 `--settings-preview`，使用独立临时配置，不启动 HID/音频管理/登录项。可通过 `SMARTKEY_PREVIEW_DIRECTORY` 指定预览数据目录。预览中的测试按钮仍会真实执行选定动作。
+
+## 快捷指令动作
+
+`ShortcutActionProvider` 使用 `typeID = "shortcut"`、参数版本 1。`parameters` 包含 `shortcutID`（UUID）、`shortcutName`（完整名称快照）和 `timeout`（1–3600 秒的字符串，缺省 300）。动作自身 `name` 是独立的短显示名称。沿用 schemaVersion 1；配置载入不依赖系统列表，未知参数版本保留但拒绝执行。
+
+`ShortcutCatalog` 异步执行 `/usr/bin/shortcuts list --show-identifiers`，按末尾 UUID 解析，支持名称中空格、括号和换行。同名条目在选择器中附加短 ID；列表无结构化输出，无法识别或截断时明确报错，并保留上次成功缓存。加载超时 15 秒，标准输出最多 2 MiB。每次展开选择列表时异步重新枚举；物理触发直接执行保存的 ID，无名称回退。
+
+`ShortcutCommandRunning` 是内部可注入边界，正式实现调用 `ManagedProcess`，测试使用模拟执行器，不执行用户已有快捷指令。命令固定为 `/usr/bin/shortcuts`，使用独立 argv：`run <UUID>` / `list --show-identifiers`，不经过 shell。首版无输入参数与输出文件管理；运行输出分别最多 256 KiB，仅保留会话记录。
+
+`ManagedProcess` 从脚本执行器提取，接收可执行路径、参数、工作目录、环境与超时，保持脚本在后台读取本次源码快照的行为。统一错误为 `ActionRunError`，旧名称 `ScriptRunError` 保留为类型别名。快捷指令执行与脚本各有一个并发槽，重复触发不排队；dispatcher 的 `runningTasks` 用于退出处理，原 `runningScript` 继续用于脚本删除保护。
+
+退出码 0 表示系统报告运行成功，不进一步验证指令内部的业务副作用。快捷指令的取消文案是「停止等待」，超时和取消的结果 `verified=false`。CLI 的受管进程组可回收，但 Shortcuts 系统服务及已经发生的副作用不在该进程组内，不能保证取消整个指令。首次授权、交互输入、真实指令重命名后运行和系统端取消行为仍需本机手动验收。
+
+
+执行输出展示：`ProcessOutput` 在后台严格识别 UTF-8 文本，二进制/PDF 返回说明，不把图片字节替换解码后交给文本排版。遇到捕获上限截断时可移除最多 3 个残缺 UTF-8 尾字节。`ExecutionOutputView` 仅展开时创建预览，限制前 4096 个 Unicode 码点和 160 码点单行，使用固定高度纵向滚动，避免图片数据、超长单行或组合字符序列堵塞主线程。当前不提供图片预览或保存原始二进制输出；需在快捷指令本身保存/查看图片。
+
+快捷指令表单不提供搜索或手动刷新按钮。选择列表使用弹出面板，展开期间显示缓存并异步更新，关闭后取消读取，重新展开会重新读取。打开按钮通过 NSWorkspace 启动系统 App，不执行 `shortcuts view`，也不依赖当前选择。

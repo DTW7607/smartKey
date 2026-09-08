@@ -55,6 +55,9 @@ public final class ActionExecution: ObservableObject, Identifiable {
     @Published public private(set) var finishedAt: Date?
     private var task: Task<Void, Never>?
     init(action: ActionDefinition, source: ExecutionSource) { self.action = action; self.source = source }
+    public var stateTitle: String {
+        action.typeID == "shortcut" && state == .cancelled ? "已停止等待" : state.title
+    }
     public func cancel() { task?.cancel() }
     func attach(_ task: Task<Void, Never>) { self.task = task }
     func finish(_ state: ExecutionState, result: ActionResult) {
@@ -120,8 +123,11 @@ public final class ActionDispatcher: ObservableObject {
                 let result = try await provider.execute(action, context: context)
                 if Task.isCancelled { execution.finish(.cancelled, result: result) }
                 else { execution.finish(result.exitCode.map { $0 == 0 } == false ? .failed : (result.verified ? .succeeded : .sent), result: result) }
-            } catch is CancellationError { execution.finish(.cancelled, result: ActionResult("任务已停止。")) }
-            catch let error as ScriptRunError { execution.finish(error.state, result: error.result) }
+            } catch is CancellationError {
+                let message = action.typeID == "shortcut" ? "已停止等待。快捷指令可能仍在系统中运行，请到快捷指令 App 检查。" : "任务已停止。"
+                execution.finish(.cancelled, result: ActionResult(message))
+            }
+            catch let error as ActionRunError { execution.finish(error.state, result: error.result) }
             catch { execution.finish(.failed, result: ActionResult(error.localizedDescription)) }
             onChange?(execution)
         }
@@ -129,5 +135,6 @@ public final class ActionDispatcher: ObservableObject {
         return execution
     }
     public var runningScript: ActionExecution? { executions.first { $0.action.typeID == "script" && $0.state == .running } }
+    public var runningTasks: [ActionExecution] { executions.filter { $0.state == .running } }
     public func cancelAll() { executions.filter { $0.state == .running }.forEach { $0.cancel() } }
 }

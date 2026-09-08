@@ -4,6 +4,29 @@ import Testing
 import SmartKeyActions
 @testable import smartKeyPopup
 
+@MainActor
+private final class RecordingShortcutProvider: ActionProvider {
+    let typeID = "shortcut"
+    var sources: [ExecutionSource] = []
+    func validate(_ action: ActionDefinition, context: ActionContext) throws { _ = try ShortcutParameters(action: action) }
+    func execute(_ action: ActionDefinition, context: ActionContext) async throws -> ActionResult {
+        sources.append(context.source)
+        return ActionResult("模拟完成", verified: true, exitCode: 0)
+    }
+}
+
+@MainActor
+private final class DelayedShortcutProvider: ActionProvider {
+    let typeID = "shortcut"
+    let delayMs: UInt64
+    init(delayMs: UInt64) { self.delayMs = delayMs }
+    func validate(_ action: ActionDefinition, context: ActionContext) throws { _ = try ShortcutParameters(action: action) }
+    func execute(_ action: ActionDefinition, context: ActionContext) async throws -> ActionResult {
+        try await Task.sleep(for: .milliseconds(delayMs))
+        return ActionResult("模拟完成", verified: true, exitCode: 0)
+    }
+}
+
 @Suite @MainActor
 struct ActionIntegrationTests {
     private func fixture() throws -> (URL, RuntimeConfiguration, ActionCoordinator) {
@@ -29,6 +52,54 @@ struct ActionIntegrationTests {
         #expect(configuration.doubleClickEnabled == 0)
         contents = try String(contentsOf: directory.appendingPathComponent("smartKey.conf"), encoding: .utf8)
         #expect(contents.contains("customValue = keep"))
+    }
+
+    @Test func shortcutProviderIsRegisteredAndAllGesturesAndTestUseIt() async throws {
+        for slot in GestureSlot.allCases {
+            let (directory, configuration, coordinator) = try fixture()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let action = ActionDefinition(typeID: "shortcut", name: "快捷指令",
+                parameters: ["shortcutID": UUID().uuidString, "shortcutName": "长名称快捷指令", "timeout": "300"])
+            #expect(try coordinator.dispatcher.registry.provider(for: action) is ShortcutActionProvider)
+            let provider = RecordingShortcutProvider()
+            coordinator.dispatcher.registry.register(provider)
+            coordinator.bind(action, to: slot)
+            #expect(configuration.doubleClickEnabled == (slot == .doubleClick ? 1 : 0))
+            coordinator.beginSession()
+            coordinator.runPhysical(slot)
+            coordinator.endSession()
+            coordinator.test(action)
+            for _ in 0..<100 {
+                if coordinator.dispatcher.runningTasks.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(provider.sources.count == 2)
+            #expect(provider.sources.contains { if case .physical = $0 { return true }; return false })
+            #expect(provider.sources.contains { if case .test = $0 { return true }; return false })
+            #expect(coordinator.dispatcher.executions.allSatisfy { $0.state == .succeeded })
+            #expect(try ActionStore(directory: directory).document.action(for: slot)?.parameters == action.parameters)
+        }
+    }
+
+    @Test func physicalFeedbackFiresOnceAtStartAfterSlowShortcutFinishes() async throws {
+        let (directory, _, coordinator) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let action = ActionDefinition(typeID: "shortcut", name: "快捷指令",
+            parameters: ["shortcutID": UUID().uuidString, "timeout": "300"])
+        coordinator.dispatcher.registry.register(DelayedShortcutProvider(delayMs: 40))
+        coordinator.bind(action, to: .longPress)
+        var feedback: [ExecutionState] = []
+        coordinator.onFeedback = { feedback.append($0.state) }
+        coordinator.beginSession()
+        coordinator.runPhysical(.longPress)
+        coordinator.endSession()
+        for _ in 0..<100 {
+            if coordinator.dispatcher.runningTasks.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(feedback == [.running])
+        #expect(coordinator.dispatcher.executions.first?.state == .succeeded)
+        #expect(coordinator.lastExecution?.state == .succeeded)
     }
 
     @Test func packageImportPreservesMetadataAndAssignsNewIdentity() throws {

@@ -171,7 +171,12 @@ struct BindingsSettingsView: View {
                     }.padding(8)
                 }
                 Color.clear.frame(height: 36)
-                if let execution = coordinator.lastExecution { ExecutionResultView(execution: execution) }
+                ForEach(coordinator.dispatcher.runningTasks) { execution in
+                    ExecutionResultView(execution: execution)
+                }
+                if let execution = coordinator.lastExecution, execution.state != .running {
+                    ExecutionResultView(execution: execution)
+                }
             }.padding(28)
         }
         .sheet(item: $editing) { slot in BindingEditor(coordinator: coordinator, slot: slot) }
@@ -180,7 +185,7 @@ struct BindingsSettingsView: View {
         .onChange(of: configuration.doubleClickMs) { _, value in if focusedTiming != "doubleClickMs" { doubleClickText = displayMs(value) } }
     }
     private func actionSummary(_ action: ActionDefinition) -> String {
-        switch action.typeID { case "keyboard": return "键盘 · \(action.parameters["display"] ?? "组合键")"; case "media": return "多媒体"; case "script": return "脚本 · 后台运行"; default: return "当前版本不支持此类型" }
+        switch action.typeID { case "keyboard": return "键盘 · \(action.parameters["display"] ?? "组合键")"; case "media": return "多媒体"; case "script": return "脚本 · 后台运行"; case "shortcut": return "快捷指令 · \(action.parameters["shortcutName"] ?? "执行快捷指令")"; default: return "当前版本不支持此类型" }
     }
     private func displayMs(_ value: CGFloat) -> String { String(Int(value)) }
     private func timing(_ title: String, key: String, text: Binding<String>, defaultValue: Double, range: ClosedRange<Double>) -> some View {
@@ -233,13 +238,16 @@ private struct BindingEditor: View {
     @State private var operation = MediaOperation.playPause
     @State private var step = 5.0
     @State private var scriptID: UUID?
+    @State private var shortcutID: UUID?
+    @State private var shortcutName = ""
+    @State private var shortcutTimeout = "300"
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("\(slot.title)动作").font(.title2.bold())
             Form {
                 Picker("动作类型", selection: $type) {
-                    Text("无").tag("none"); Text("键盘功能").tag("keyboard"); Text("多媒体功能").tag("media"); Text("执行脚本").tag("script")
+                    Text("无").tag("none"); Text("键盘功能").tag("keyboard"); Text("多媒体功能").tag("media"); Text("执行脚本").tag("script"); Text("执行快捷指令").tag("shortcut")
                 }
                 if type == "keyboard" {
                     TextField("动作名称", text: $name)
@@ -251,6 +259,9 @@ private struct BindingEditor: View {
                     if operation == .volumeUp || operation == .volumeDown {
                         Stepper("音量步长：\(Int(step))%", value: $step, in: 1...100)
                     }
+                } else if type == "shortcut" {
+                    ShortcutBindingFields(catalog: coordinator.shortcuts, shortcutID: $shortcutID,
+                                          shortcutName: $shortcutName, name: $name, timeout: $shortcutTimeout)
                 } else if type == "script" {
                     Picker("脚本", selection: $scriptID) {
                         Text("请选择").tag(nil as UUID?)
@@ -266,6 +277,10 @@ private struct BindingEditor: View {
             }
         }.padding(26).frame(width: 440)
             .onAppear { load() }
+            .onChange(of: type) { _, next in
+                error = nil
+                if next == "shortcut", shortcutID == nil, name == "键盘操作" { name = "快捷指令" }
+            }
     }
     private func load() {
         guard let action = coordinator.store.document.action(for: slot) else { return }
@@ -275,6 +290,9 @@ private struct BindingEditor: View {
         operation = MediaOperation(rawValue: action.parameters["operation"] ?? "") ?? .playPause
         step = Double(action.parameters["step"] ?? "5") ?? 5
         scriptID = action.parameters["scriptID"].flatMap(UUID.init(uuidString:))
+        shortcutID = action.parameters["shortcutID"].flatMap(UUID.init(uuidString:))
+        shortcutName = action.parameters["shortcutName"] ?? ""
+        shortcutTimeout = action.parameters["timeout"] ?? "300"
     }
     private func save() {
         do {
@@ -282,15 +300,25 @@ private struct BindingEditor: View {
                 try coordinator.store.bind(nil, to: slot); coordinator.refresh(); dismiss(); return
             }
             let action: ActionDefinition
-            if type == "script" {
+            if type == "shortcut" {
+                guard let shortcutID else { throw ActionError("请选择一个快捷指令。") }
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                try ActionNames.validate(trimmed)
+                action = ActionDefinition(typeID: type, name: trimmed, parameters: [
+                    "shortcutID": shortcutID.uuidString,
+                    "shortcutName": coordinator.shortcuts.shortcuts.first(where: { $0.id == shortcutID })?.name ?? shortcutName,
+                    "timeout": shortcutTimeout.trimmingCharacters(in: .whitespacesAndNewlines)
+                ])
+                _ = try ShortcutParameters(action: action)
+            } else if type == "script" {
                 guard let script = coordinator.store.document.scripts.first(where: { $0.id == scriptID }) else { throw ActionError("请选择一个脚本。") }
                 action = ActionDefinition(typeID: type, name: script.name, parameters: ["scriptID": script.id.uuidString])
             } else if type == "media" {
                 action = ActionDefinition(typeID: type, name: operation.title, parameters: ["operation": operation.rawValue, "step": String(step)])
-            } else {
+            } else if type == "keyboard" {
                 let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines); try ActionNames.validate(trimmed)
                 action = ActionDefinition(typeID: type, name: trimmed, parameters: ["keyCode": String(keyCode), "modifiers": String(modifiers), "display": keyDisplay])
-            }
+            } else { throw ActionError("当前版本不支持此动作类型。") }
             try coordinator.store.bind(action, to: slot); coordinator.refresh(); dismiss()
         } catch { self.error = error.localizedDescription }
     }
@@ -341,23 +369,16 @@ struct ExecutionResultView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label("\(execution.action.name) · \(execution.state.title)", systemImage: execution.state.symbol).font(.headline)
+                    Label("\(execution.action.name) · \(execution.stateTitle)", systemImage: execution.state.symbol).font(.headline)
                     Spacer()
-                    if execution.state == .running { ProgressView().controlSize(.small); Button("停止") { execution.cancel() } }
+                    if execution.state == .running { ProgressView().controlSize(.small); Button(execution.action.typeID == "shortcut" ? "停止等待" : "停止") { execution.cancel() } }
                 }
                 if let result = execution.result {
                     Text(result.message).font(.callout).textSelection(.enabled)
                     if !result.stdout.isEmpty || !result.stderr.isEmpty {
-                        DisclosureGroup("查看输出") {
-                            ScrollView([.vertical, .horizontal]) {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    if !result.stdout.isEmpty { Text(result.stdout).textSelection(.enabled) }
-                                    if !result.stderr.isEmpty { Text("标准错误\n" + result.stderr).foregroundStyle(.red).textSelection(.enabled) }
-                                }.font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading)
-                            }.frame(maxHeight: 180)
-                        }
+                        ExecutionOutputView(stdout: result.stdout, stderr: result.stderr)
                     }
-                } else { Text("正在执行，可随时停止。").font(.caption).foregroundStyle(.secondary) }
+                } else { Text(execution.action.typeID == "shortcut" ? "正在等待系统执行；如需授权或输入，请在快捷指令 App 中完成。停止等待不会保证指令已停止。" : "正在执行，可随时停止。").font(.caption).foregroundStyle(.secondary) }
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         }
     }

@@ -113,15 +113,18 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { AppRunMode.preview }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard actions?.dispatcher.runningScript != nil else { return .terminateNow }
-        let alert = NSAlert(); alert.messageText = "还有脚本正在运行"
+        guard actions?.dispatcher.runningTasks.isEmpty == false else { return .terminateNow }
+        let alert = NSAlert(); alert.messageText = "还有动作正在运行"
         alert.informativeText = "停止任务后退出，或返回继续运行。"
+        if actions?.dispatcher.runningTasks.contains(where: { $0.action.typeID == "shortcut" }) == true {
+            alert.informativeText += "快捷指令仅停止等待，可能仍在系统中运行。"
+        }
         alert.addButton(withTitle: "取消退出"); alert.addButton(withTitle: "停止任务并退出")
         guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         actions?.dispatcher.cancelAll()
         Task { @MainActor [weak self] in
             for _ in 0..<120 {
-                if self?.actions?.dispatcher.runningScript == nil { sender.reply(toApplicationShouldTerminate: true); return }
+                if self?.actions?.dispatcher.runningTasks.isEmpty != false { sender.reply(toApplicationShouldTerminate: true); return }
                 try? await Task.sleep(for: .milliseconds(50))
             }
             self?.actions?.notice = "任务仍在停止，请稍后再退出。"
@@ -264,10 +267,8 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showExecution(_ execution: ActionExecution) {
-        guard !AppRunMode.preview, actions?.isSuspended == false else { return }
+        guard !AppRunMode.preview, actions?.isSuspended == false, execution.state == .running else { return }
         if executionBubbles[execution.id] != nil { return }
-        // A completed action that has since been unbound should not create a new HUD.
-        if execution.state != .running, actions?.store.document.actions.contains(where: { $0.id == execution.action.id }) != true { return }
         guard let screen = currentScreen() else { return }
         let window = config.window
         var style: NSWindow.StyleMask = [.borderless]

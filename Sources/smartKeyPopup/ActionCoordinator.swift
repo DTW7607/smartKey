@@ -5,6 +5,7 @@ import SmartKeyActions
 @MainActor
 final class ActionCoordinator: ObservableObject {
     let store: ActionStore
+    let shortcuts = ShortcutCatalog()
     let library: ScriptLibrary
     let dispatcher: ActionDispatcher
     let configuration: RuntimeConfiguration
@@ -34,7 +35,7 @@ final class ActionCoordinator: ObservableObject {
         store = try ActionStore(directory: directory)
         library = try ScriptLibrary(directory: directory)
         let registry = ActionRegistry()
-        registry.register(KeyboardActionProvider()); registry.register(MediaActionProvider()); registry.register(ScriptActionProvider())
+        registry.register(KeyboardActionProvider()); registry.register(MediaActionProvider()); registry.register(ScriptActionProvider()); registry.register(ShortcutActionProvider())
         dispatcher = ActionDispatcher(registry: registry)
         notice = store.recoveryMessage
         store.$document.dropFirst().sink { [weak self] _ in
@@ -48,7 +49,7 @@ final class ActionCoordinator: ObservableObject {
         dispatcher.onChange = { [weak self] execution in
             self?.lastExecution = execution
             self?.objectWillChange.send()
-            if execution.source == .physical { self?.onFeedback?(execution) }
+            if execution.source == .physical, execution.state == .running { self?.onFeedback?(execution) }
         }
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
