@@ -30,8 +30,6 @@ final class GestureBubble {
         }
     }
 
-    func update(symbol: String, status: String) { content.symbol = symbol; content.status = status }
-
     func start(on screen: NSScreen, finished: @escaping () -> Void) {
         onFinished = finished
         animate(appearing: true, on: screen)

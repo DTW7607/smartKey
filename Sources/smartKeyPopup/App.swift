@@ -265,10 +265,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func showExecution(_ execution: ActionExecution) {
         guard !AppRunMode.preview, actions?.isSuspended == false else { return }
-        if let bubble = executionBubbles[execution.id] {
-            bubble.update(symbol: execution.state == .succeeded ? "" : execution.state.symbol, status: execution.state.title)
-            return
-        }
+        if executionBubbles[execution.id] != nil { return }
         // A completed action that has since been unbound should not create a new HUD.
         if execution.state != .running, actions?.store.document.actions.contains(where: { $0.id == execution.action.id }) != true { return }
         guard let screen = currentScreen() else { return }
@@ -279,8 +276,6 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             rect: NSRect(origin: .zero, size: config.layout.panelSize),
             style: style, window: window)
         let bubble = GestureBubble(panel: overlay, config: config, mask: mask, text: execution.action.name)
-        let symbol = execution.state == .succeeded ? "" : execution.state.symbol
-        bubble.update(symbol: symbol, status: execution.state.title)
         executionBubbles[execution.id] = bubble
         bubbles.append(bubble)
         bubble.start(on: screen) { [weak self, weak bubble] in
