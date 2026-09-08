@@ -144,6 +144,8 @@ struct DeviceSetupView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture(perform: action)
+        // The panel appears without focus; its first click must also select the device.
+        .allowsWindowActivationEvents(true)
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("选择\(title)")
