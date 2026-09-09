@@ -1,0 +1,30 @@
+name: macOS 构建与测试
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 检查工具链
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: 运行模拟测试（不连接真实硬件）
+        run: swift test
+      - name: 构建应用并验证本机签名
+        run: ./scripts/build-app.sh

@@ -1,0 +1,10 @@
+* text=auto
+*.sh text eol=lf
+*.swift text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+*.png binary
+*.icns binary
+*.gif binary
+*.mp4 binary

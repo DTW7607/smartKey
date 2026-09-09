@@ -24,3 +24,15 @@ xcuserdata/
 
 # User settings
 .vscode/
+
+# Local tools and credentials
+.codex/
+.agents/
+.env
+.env.*
+!.env.example
+
+# Distribution output and diagnostics
+dist/
+*.log
+*.dSYM/
