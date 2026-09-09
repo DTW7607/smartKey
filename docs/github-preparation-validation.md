@@ -26,6 +26,12 @@ SMARTKEY_SWIFT_DISABLE_SANDBOX=1 ./scripts/build-app.sh
 
 本机日志位于 `/tmp/smartkey-publish-review/tests-system.log` 和 `/tmp/smartkey-publish-review/build.log`，不纳入仓库。
 
+## 首次 CI 后的测试修正
+
+首次上传后的 [GitHub Actions 运行](https://github.com/DTW7607/smartKey/actions/runs/34301687477) 暴露了 `secondScriptRunFailsBusyUntilFirstCompletes` 的计时依赖：第一个脚本固定休眠 3 秒，在较慢 runner 上可能在测试恢复调度前退出，导致第二次运行被正常接受而误报失败。
+
+测试改为等待脚本启动标记，并让第一个脚本持续运行到主动取消（保留 30 秒超时兜底），同时验证忙碌时拒绝重复运行、取消成功、取消后可以再次运行。未修改应用执行器行为。修正后本地完整测试退出码为 0，仍为 100 项通过、1 项真实 HID 测试跳过；日志位于 `/tmp/smartkey-publish-review/tests-ci-fix.log`。
+
 ## 文档与仓库检查
 
 - 中英文 README、贡献指南与 `docs/` 下 Markdown 的本地链接和图片引用均可解析到现有文件；中英文 README 的素材引用和 Shell 命令一致。

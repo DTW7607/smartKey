@@ -213,8 +213,11 @@ struct ScriptExecutorTests {
         let startedFile = directory.appendingPathComponent("started")
         let firstScript = try makeScript(
             in: directory,
-            content: "printf started > \"$STARTED_FILE\"; sleep 3\n",
+            // Stay busy until cancelled; a fixed sleep can finish while other
+            // main-actor tests render UI on a slower CI runner.
+            content: "printf started > \"$STARTED_FILE\"; while :; do sleep 1; done\n",
             name: "第一",
+            timeout: 30,
             environment: ["STARTED_FILE": startedFile.path]
         )
         let secondScript = try makeScript(in: directory, content: "printf second\n", name: "第二")
@@ -223,7 +226,8 @@ struct ScriptExecutorTests {
         registry.register(provider)
         let dispatcher = ActionDispatcher(registry: registry)
         let first = try runScript(firstScript, dispatcher: dispatcher)
-        #expect(await waitForFile(startedFile))
+        defer { first.cancel() }
+        try #require(await waitForFile(startedFile))
         #expect(dispatcher.runningScript === first)
 
         let second = try runScript(secondScript, dispatcher: dispatcher)
@@ -234,6 +238,11 @@ struct ScriptExecutorTests {
         first.cancel()
         #expect(await waitForTerminal(first, timeout: 8))
         #expect(first.state == .cancelled)
+
+        let afterCancellation = try runScript(secondScript, dispatcher: dispatcher)
+        #expect(await waitForTerminal(afterCancellation))
+        #expect(afterCancellation.state == .succeeded)
+        #expect(afterCancellation.result?.stdout == "second")
     }
 
     @Test
