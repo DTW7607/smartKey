@@ -9,6 +9,7 @@ final class ActionCoordinator: ObservableObject {
     let library: ScriptLibrary
     let dispatcher: ActionDispatcher
     let configuration: RuntimeConfiguration
+    let permissions: PermissionsModel
     var deviceSetup: DeviceSetupModel?
     @Published var notice: String?
     @Published var deviceStatus = "等待连接"
@@ -31,8 +32,10 @@ final class ActionCoordinator: ObservableObject {
     private var suspensionReasons = Set<String>()
     var scriptDrafts: [UUID: ScriptDraft] = [:]
 
-    init(configuration: RuntimeConfiguration, directory: URL) throws {
+    init(configuration: RuntimeConfiguration, directory: URL, permissions: PermissionsModel? = nil) throws {
         self.configuration = configuration
+        self.permissions = permissions ?? PermissionsModel()
+        self.permissions.refresh()
         store = try ActionStore(directory: directory)
         library = try ScriptLibrary(directory: directory)
         let registry = ActionRegistry()
@@ -47,6 +50,7 @@ final class ActionCoordinator: ObservableObject {
             DispatchQueue.main.async { self?.synchronizeDoubleClick() }
         }.store(in: &cancellables)
         library.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        self.permissions.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         dispatcher.onChange = { [weak self] execution in
             self?.lastExecution = execution
             self?.objectWillChange.send()
@@ -81,7 +85,16 @@ final class ActionCoordinator: ObservableObject {
         isSuspended = !suspensionReasons.isEmpty
     }
 
-    func refresh() { library.refresh(store.document.scripts); synchronizeDoubleClick(); objectWillChange.send() }
+    var canUseActions: Bool { permissions.canUseActions }
+
+    @discardableResult
+    func requireActionPermission() -> Bool {
+        permissions.refresh()
+        guard canUseActions else { notice = PermissionsModel.actionRestriction; return false }
+        return true
+    }
+
+    func refresh() { permissions.refresh(); library.refresh(store.document.scripts); synchronizeDoubleClick(); objectWillChange.send() }
     private func bindingsChanged() {
         library.refresh(store.document.scripts); synchronizeDoubleClick(); onBindingsChanged?(); objectWillChange.send()
     }
@@ -99,6 +112,7 @@ final class ActionCoordinator: ObservableObject {
         guard !store.document.paused, !isSuspended else { return }
         let document = sessionDocument ?? store.document
         guard !document.paused, let action = document.action(for: slot) else { return }
+        guard requireActionPermission() else { return }
         dispatcher.cooldown = max(0, Double(configuration.bubbleRetriggerMs) / 1000)
         dispatcher.run(action, context: context(for: action, document: document, source: .physical, target: sessionTarget))
     }
@@ -107,6 +121,7 @@ final class ActionCoordinator: ObservableObject {
         return ActionContext(source: source, targetPID: target, script: script, scriptURL: script.map { library.fileURL(for: $0) })
     }
     func test(_ action: ActionDefinition) {
+        guard requireActionPermission() else { return }
         guard !isSuspended else { notice = "会话已暂停。"; return }
         if action.typeID == "keyboard" {
             keyboardTest?.cancel(); testingKeyboard = true
@@ -114,7 +129,7 @@ final class ActionCoordinator: ObservableObject {
             keyboardTest = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(3)) } catch { self?.testingKeyboard = false; return }
                 guard let self else { return }; testingKeyboard = false
-                guard !isSuspended else { return }
+                guard !isSuspended, requireActionPermission() else { return }
                 let target = NSWorkspace.shared.frontmostApplication?.processIdentifier
                 guard target != ProcessInfo.processInfo.processIdentifier else { notice = "未切换到目标应用，已取消测试。"; return }
                 dispatcher.run(action, context: context(for: action, document: store.document, source: .test, target: target))
@@ -124,9 +139,18 @@ final class ActionCoordinator: ObservableObject {
     func testScript(_ script: ScriptRecord) { test(ActionDefinition(typeID: "script", name: script.name, parameters: ["scriptID": script.id.uuidString])) }
     func setPaused(_ paused: Bool) { perform { try store.change { $0.paused = paused } } }
     func perform(_ work: () throws -> Void) { do { try work() } catch { notice = error.localizedDescription } }
-    func bind(_ action: ActionDefinition?, to slot: GestureSlot) { perform { try store.bind(action, to: slot); bindingsChanged() } }
-    func saveScript(_ script: ScriptRecord) { perform { try store.saveScript(script); refresh() } }
-    func moveScripts(from offsets: IndexSet, to destination: Int) { perform { try store.moveScripts(from: offsets, to: destination) } }
+    func bind(_ action: ActionDefinition?, to slot: GestureSlot) {
+        guard requireActionPermission() else { return }
+        perform { try store.bind(action, to: slot); bindingsChanged() }
+    }
+    func saveScript(_ script: ScriptRecord) {
+        guard requireActionPermission() else { return }
+        perform { try store.saveScript(script); refresh() }
+    }
+    func moveScripts(from offsets: IndexSet, to destination: Int) {
+        guard requireActionPermission() else { return }
+        perform { try store.moveScripts(from: offsets, to: destination) }
+    }
     func uniqueName(_ suggested: String) -> String {
         let trimmed = suggested.trimmingCharacters(in: .whitespacesAndNewlines)
         let candidate = ActionNames.truncated(trimmed.isEmpty ? "新脚本" : trimmed)
@@ -140,6 +164,7 @@ final class ActionCoordinator: ObservableObject {
     }
     @discardableResult
     func createScript() -> ScriptRecord? {
+        guard requireActionPermission() else { return nil }
         let script = ScriptRecord(name: uniqueName("新脚本"))
         do {
             try library.createFile(for: script, content: Data("#!/bin/zsh\nprintf '你好，智键\\n'\n".utf8))
@@ -148,6 +173,7 @@ final class ActionCoordinator: ObservableObject {
         } catch { notice = error.localizedDescription; return nil }
     }
     func importScript(_ url: URL) {
+        guard requireActionPermission() else { return }
         perform {
             var script = url.pathExtension.lowercased() == "smartkeyscript" ? try ScriptLibrary.readPackageMetadata(at: url) : ScriptRecord(name: uniqueName(url.deletingPathExtension().lastPathComponent))
             script.id = UUID(); script.name = uniqueName(script.name)
@@ -157,6 +183,7 @@ final class ActionCoordinator: ObservableObject {
         }
     }
     func duplicate(_ script: ScriptRecord) {
+        guard requireActionPermission() else { return }
         var copy = script; copy.id = UUID(); copy.name = uniqueName(script.name)
         perform {
             try library.createFile(for: copy, content: ScriptLibrary.readSnapshot(at: library.fileURL(for: script)))
@@ -165,6 +192,7 @@ final class ActionCoordinator: ObservableObject {
         }
     }
     func delete(_ script: ScriptRecord) {
+        guard requireActionPermission() else { return }
         guard dispatcher.runningScript?.action.parameters["scriptID"] != script.id.uuidString else { notice = "请先停止正在运行的脚本。"; return }
         perform {
             // Remove references first. An interrupted deletion can only leave an
@@ -174,11 +202,13 @@ final class ActionCoordinator: ObservableObject {
         }
     }
     func showImportPanel() {
+        guard requireActionPermission() else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.message = "导入 Shell 脚本或智键脚本包，将复制到脚本库。"
         if panel.runModal() == .OK, let url = panel.url { importScript(url) }
     }
     func export(_ script: ScriptRecord, package: Bool) {
+        guard requireActionPermission() else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = script.name + (package ? ".smartkeyscript" : ".sh")
         if panel.runModal() == .OK, let url = panel.url { perform { try library.exportFile(for: script, to: url, package: package) } }
     }

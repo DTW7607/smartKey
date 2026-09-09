@@ -35,7 +35,8 @@ struct ActionIntegrationTests {
         let file = directory.appendingPathComponent("smartKey.conf")
         try "# 用户配置\ndoubleClickEnabled = 0 # 自动\nbubbleEndY = 24\ncustomValue = keep\n".write(to: file, atomically: true, encoding: .utf8)
         let configuration = RuntimeConfiguration.load(url: file)
-        return (directory, configuration, try ActionCoordinator(configuration: configuration, directory: directory))
+        return (directory, configuration, try ActionCoordinator(configuration: configuration, directory: directory,
+                                                               permissions: PermissionsModel(check: { _ in true })))
     }
 
     @Test func bindingOwnsDoubleClickAndPreservesUnrelatedConfiguration() throws {

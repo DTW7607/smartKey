@@ -22,6 +22,7 @@ public final class SmartKeyService {
     public var lastLegalOutputUID: String? { outputGuard.lastLegalOutputUID }
     public var seizeStatus: SmartKeySeizeStatus { hid.seizeStatus }
     public var seizeDiagnostic: String? { hid.diagnostic }
+    public var isRemotePermissionDenied: Bool { hid.isPermissionDenied }
     public var isButtonPressed: Bool { recognizer.isButtonPressed }
 
     private let jack = JackWatcher()

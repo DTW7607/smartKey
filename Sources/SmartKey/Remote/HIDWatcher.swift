@@ -14,6 +14,9 @@ final class HIDWatcher {
     private(set) var diagnostic: String?
     private var lastOpenError: IOReturn?
     var isRunning: Bool { manager != nil }
+    var isPermissionDenied: Bool {
+        lastOpenError == kIOReturnNotPermitted || lastOpenError == kIOReturnNotPrivileged
+    }
     private static let runLoopMode = CFRunLoopMode.commonModes.rawValue
 
     func start() {
@@ -108,6 +111,7 @@ final class HIDWatcher {
     }
 
     private func reportFailure(_ result: IOReturn) {
+        let changedFailure = seizeStatus == .failed && result != lastOpenError
         switch result {
         case kIOReturnExclusiveAccess, kIOReturnBusy:
             diagnostic = "智键正被其他程序占用，请退出其他智键程序后重试。"
@@ -121,6 +125,9 @@ final class HIDWatcher {
         }
         lastOpenError = result
         setStatus(.failed)
+        // A busy device may subsequently fail for permission reasons without
+        // changing the coarse status. Publish that new diagnostic as well.
+        if changedFailure { onSeizeStatusChange?(.failed) }
     }
 
     private func handle(value: IOHIDValue) {

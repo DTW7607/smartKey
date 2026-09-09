@@ -38,6 +38,20 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     let mask = RuntimeConfiguration.load(url: AppRunMode.preview ? AppRunMode.previewDirectory.appendingPathComponent("smartKey.conf") : nil)
     private var actions: ActionCoordinator?
     private var settingsWindow: SettingsWindowController?
+    private let permissions = PermissionsModel(defaults: .standard, installationID: PermissionsModel.installationID)
+    private var permissionWindow: PermissionWindowController?
+    private var permissionTimer: Timer?
+    private var settingsVisible = false
+    private lazy var deviceMonitoring = DeviceMonitoringController(
+        start: { [weak self] in self?.startSmartKey() },
+        stop: { [weak self] in self?.stopSmartKey() }
+    )
+    private lazy var permissionRuntime = PermissionRuntimeController(
+        start: { [weak self] in self?.startAuthorizedRuntime() },
+        stop: { [weak self] in self?.stopAuthorizedRuntime() },
+        showRestrictedWindow: { [weak self] in self?.openGeneralSettings() },
+        terminate: { NSApp.terminate(nil) }
+    )
     private var actionCancellables = Set<AnyCancellable>()
     private var executionBubbles: [UUID: GestureBubble] = [:]
     private let service = SmartKeyService(
@@ -60,12 +74,39 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installApplicationMenu()
+        createActionSystem()
         if AppRunMode.preview {
-            createActionSystem()
             actions?.deviceStatus = "设置预览 · 不连接硬件"
             settingsWindow?.open()
             return
         }
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(screensChanged),
+                           name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        center.addObserver(self, selector: #selector(reapplyFocusAppearance),
+                           name: NSApplication.didResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(reapplyFocusAppearance),
+                           name: NSApplication.didBecomeActiveNotification, object: nil)
+        if permissions.needsStartupGuidance(isPreview: false) {
+            NSApp.setActivationPolicy(.regular)
+            let controller = PermissionWindowController(model: permissions)
+            permissionWindow = controller
+            controller.onOpenSettings = { [weak self] in self?.openGeneralSettings() }
+            controller.onClose = { [weak self] in self?.userWindowClosed() }
+            controller.open()
+        } else {
+            permissionRuntime.update(authorized: true, hasVisibleWindow: hasVisibleUserWindow)
+        }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkPermissions() }
+        }
+        permissionTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func startAuthorizedRuntime() {
+        guard !AppRunMode.preview, permissions.canUseActions else { return }
+        NSApp.setActivationPolicy(config.window.activationPolicy)
         let window = config.window
         var style: NSWindow.StyleMask = [.borderless]
         if window.nonactivating { style.insert(.nonactivatingPanel) }
@@ -100,22 +141,63 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         LoginItem.registerIfNeeded()
         installStatusMenu()
         refreshMenu()
-        createActionSystem()
 
-        let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(screensChanged),
-                           name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        center.addObserver(self, selector: #selector(reapplyFocusAppearance),
-                           name: NSApplication.didResignActiveNotification, object: nil)
-        center.addObserver(self, selector: #selector(reapplyFocusAppearance),
-                           name: NSApplication.didBecomeActiveNotification, object: nil)
         layout()
-        startSmartKey()
+        updateDeviceMonitoring()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { AppRunMode.preview }
+    private func stopAuthorizedRuntime() {
+        maskCancellable = nil
+        cancelInsertionAnimation()
+        dismissGestureBubble()
+        actions?.dispatcher.cancelAll()
+        actions?.endSession()
+        setupResizer?.stop()
+        setupPanel?.orderOut(nil)
+        maskPanel?.orderOut(nil)
+        press.pressed = false
+        if let status { NSStatusBar.system.removeStatusItem(status) }
+        status = nil
+        NSApp.setActivationPolicy(.regular)
+        updateDeviceMonitoring()
+    }
+
+    private func updateDeviceMonitoring() {
+        guard !AppRunMode.preview else { return }
+        deviceMonitoring.update(residentAuthorized: permissionRuntime.isRunning && !permissionRuntime.isTerminating,
+                                settingsVisible: settingsVisible && !permissionRuntime.isTerminating)
+    }
+
+    private func stopSmartKey() {
+        setupTimer?.invalidate()
+        setupTimer = nil
+        service.stop()
+        setup.jackChanged(false)
+        refreshMenu()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        permissions.refresh()
+        return AppRunMode.preview || !permissions.canUseActions
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        permissions.refresh()
+        if !permissions.canUseActions {
+            permissionRuntime.shutdown()
+            updateDeviceMonitoring()
+            actions?.dispatcher.cancelAll()
+            guard actions?.dispatcher.runningTasks.isEmpty == false else { return .terminateNow }
+            Task { @MainActor [weak self] in
+                // Let managed child processes finish cancellation before exit.
+                // Unauthorized window closure never asks to remain in background.
+                while self?.actions?.dispatcher.runningTasks.isEmpty == false {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
         guard actions?.dispatcher.runningTasks.isEmpty == false else { return .terminateNow }
         let alert = NSAlert(); alert.messageText = "还有动作正在运行"
         alert.informativeText = "停止任务后退出，或返回继续运行。"
@@ -137,21 +219,36 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        setupTimer?.invalidate()
-        cancelInsertionAnimation()
-        service.stop()
+        permissionWindow?.onClose = nil
+        permissionTimer?.invalidate()
+        permissionRuntime.shutdown()
+        updateDeviceMonitoring()
     }
 
     private func createActionSystem() {
         do {
             let directory = AppRunMode.preview ? AppRunMode.previewDirectory : RuntimeConfiguration.userFile().deletingLastPathComponent()
-            let actions = try ActionCoordinator(configuration: mask, directory: directory)
+            let actions = try ActionCoordinator(configuration: mask, directory: directory, permissions: permissions)
             self.actions = actions
             if !AppRunMode.preview { actions.deviceSetup = setup }
             settingsWindow = SettingsWindowController(coordinator: actions)
-            settingsWindow?.onOpen = { [weak self] in self?.setup.settingsDidShow() }
-            settingsWindow?.onClose = { [weak self] in self?.setup.settingsDidHide() }
-            settingsWindow?.onMinimize = { [weak self] in self?.setup.settingsDidHide() }
+            settingsWindow?.onOpen = { [weak self] in
+                guard let self else { return }
+                self.settingsVisible = true
+                self.setup.settingsDidShow()
+                self.updateDeviceMonitoring()
+            }
+            settingsWindow?.onClose = { [weak self] in
+                self?.settingsVisible = false
+                self?.updateDeviceMonitoring()
+                self?.setup.settingsDidHide()
+                self?.userWindowClosed()
+            }
+            settingsWindow?.onMinimize = { [weak self] in
+                self?.settingsVisible = false
+                self?.updateDeviceMonitoring()
+                self?.setup.settingsDidHide()
+            }
             setup.presentationHostForNewFlow = { [weak self] in
                 guard let window = self?.settingsWindow?.window,
                       window.isVisible, !window.isMiniaturized else { return .popup }
@@ -166,6 +263,16 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             actions.onBindingsChanged = { [weak self] in self?.applySmartKeyTiming(); self?.refreshMenu() }
+            permissions.$granted.dropFirst().sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self, !AppRunMode.preview else { return }
+                    self.checkPermissions()
+                    if self.deviceMonitoring.isRunning, self.permissions.granted.contains(.inputMonitoring), self.setup.stage == .remoteError,
+                       self.service.isRemotePermissionDenied {
+                        self.setup.retryRemote()
+                    }
+                }
+            }.store(in: &actionCancellables)
             actions.onFeedback = { [weak self] execution in self?.showExecution(execution) }
             actions.$isSuspended.sink { [weak self] suspended in if suspended { self?.service.resetPendingGesture() } }.store(in: &actionCancellables)
             refreshMenu()
@@ -176,6 +283,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startSmartKey() {
+        guard !service.isRunning else { return }
         service.onGestureSessionStart = { [weak self] in self?.actions?.beginSession() }
         service.onGestureSessionEnd = { [weak self] in self?.actions?.endSession() }
         setup.onStageChange = { [weak self] in
@@ -225,6 +333,11 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         service.onSeizeStatusChange = { [weak self] status in
             self?.applyOnMain { delegate in
                 delegate.setup.seizeChanged(status)
+                if status == .failed, delegate.service.isRemotePermissionDenied {
+                    delegate.permissions.reportInputMonitoringDenied()
+                    // Leave the HID callback before presenting AppKit UI.
+                    DispatchQueue.main.async { [weak delegate] in delegate?.checkPermissions() }
+                }
                 delegate.refreshMenu()
             }
         }
@@ -260,10 +373,11 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     private func applyOnMain(_ body: @escaping (PopupDelegate) -> Void) {
         if Thread.isMainThread {
+            guard deviceMonitoring.isRunning else { return }
             body(self)
         } else {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.deviceMonitoring.isRunning else { return }
                 body(self)
             }
         }
@@ -277,7 +391,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showExecution(_ execution: ActionExecution) {
-        guard !AppRunMode.preview, actions?.isSuspended == false, execution.state == .running else { return }
+        guard !AppRunMode.preview, permissionRuntime.isRunning, actions?.isSuspended == false, execution.state == .running else { return }
         if executionBubbles[execution.id] != nil { return }
         guard let screen = currentScreen() else { return }
         bubbles.forEach { $0.retract() }
@@ -405,7 +519,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func layout() {
-        guard let target = currentScreen() else { return }
+        guard permissionRuntime.isRunning, maskPanel != nil, let target = currentScreen() else { return }
         let maskSize = mask.overlaySize
         maskPanel.setFrame(
             NSRect(
@@ -422,7 +536,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func layoutSetup(animate: Bool = true) {
-        guard setupPanel != nil else { return }
+        guard permissionRuntime.isRunning, setupPanel != nil else { return }
         if setup.presentationHost != .popup || !setup.isPresented {
             setupResizer.stop()
             setupPanel.orderOut(nil)
@@ -440,6 +554,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func animateInsertion() {
+        guard permissionRuntime.isRunning, maskPanel != nil else { return }
         cancelInsertionAnimation()
         let timing = mask.insertionAnimation
         guard timing.duration > 0 else { return }
@@ -488,7 +603,42 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reapplyFocusAppearance() {
         actions?.refresh()
+        if !AppRunMode.preview { checkPermissions() }
         bubbles.forEach { $0.applyFocusAppearance() }
+    }
+
+    private func checkPermissions() {
+        guard !AppRunMode.preview, !permissionRuntime.isTerminating else { return }
+        permissions.refresh()
+        permissionRuntime.update(authorized: permissions.canUseActions, hasVisibleWindow: hasVisibleUserWindow)
+        guard deviceMonitoring.isRunning, permissionWindow?.window?.isVisible != true,
+              permissions.takeInputMonitoringPrompt() else { return }
+        let controller = PermissionWindowController(model: permissions, permissions: [.inputMonitoring])
+        permissionWindow = controller
+        controller.onClose = { [weak self] in self?.userWindowClosed() }
+        controller.open()
+    }
+
+    private func openGeneralSettings() {
+        permissions.refresh()
+        UserDefaults.standard.set(SettingsSection.general.rawValue, forKey: "smartKey.settings.section")
+        openSettings()
+    }
+
+    private var hasVisibleUserWindow: Bool {
+        permissionWindow?.window?.isVisible == true || settingsWindow?.window?.isVisible == true
+            || settingsWindow?.window?.isMiniaturized == true
+    }
+
+    private func userWindowClosed() {
+        // windowWillClose fires while the window is still visible. Check after
+        // closing, including a guide-to-settings transition that opens first.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.permissions.refresh()
+            self.permissionRuntime.windowClosed(authorized: !AppRunMode.preview && self.permissions.canUseActions,
+                                                 hasVisibleWindow: self.hasVisibleUserWindow)
+        }
     }
 
     @objc private func screensChanged() {

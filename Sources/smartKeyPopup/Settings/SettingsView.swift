@@ -7,19 +7,30 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "通用", bindings = "动作配置", scripts = "脚本管理"
     var id: String { rawValue }
     var symbol: String { switch self { case .general: return "gearshape"; case .bindings: return "button.programmable"; case .scripts: return "terminal" } }
+    func isAvailable(canUseActions: Bool) -> Bool { self == .general || canUseActions }
+    static func availableSelection(saved: String, canUseActions: Bool) -> SettingsSection {
+        SettingsSection(rawValue: saved) ?? (canUseActions ? .bindings : .general)
+    }
 }
 
 @MainActor
 struct SmartKeySettingsView: View {
     @ObservedObject var coordinator: ActionCoordinator
     @AppStorage("smartKey.settings.section") private var savedSection = SettingsSection.bindings.rawValue
+    private var currentSection: SettingsSection {
+        SettingsSection.availableSelection(saved: savedSection, canUseActions: coordinator.canUseActions)
+    }
     private var selection: Binding<SettingsSection?> {
-        Binding(get: { SettingsSection(rawValue: savedSection) ?? .bindings }, set: { if let value = $0 { savedSection = value.rawValue } })
+        Binding(get: { currentSection }, set: {
+            if let value = $0 { savedSection = value.rawValue }
+        })
     }
     var body: some View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
             List(SettingsSection.allCases, selection: selection) { section in
                 Label(section.rawValue, systemImage: section.symbol).tag(section).padding(.vertical, 5)
+                    .foregroundStyle(section.isAvailable(canUseActions: coordinator.canUseActions) ? .primary : .tertiary)
+                    .help(section.isAvailable(canUseActions: coordinator.canUseActions) ? section.rawValue : PermissionsModel.actionRestriction)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 180)
             .safeAreaInset(edge: .bottom) {
@@ -28,21 +39,27 @@ struct SmartKeySettingsView: View {
             }
         } detail: {
             VStack(spacing: 0) {
+                if currentSection != .general, !coordinator.canUseActions {
+                    Text("当前页面仅供查看。请在通用设置中授予辅助功能权限后操作。")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.quaternary)
+                }
                 if let notice = coordinator.notice {
                     HStack(alignment: .top) {
                         Image(systemName: "info.circle")
                         Text(notice).font(.callout).textSelection(.enabled)
                         Spacer(minLength: 8)
                         Button { coordinator.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭提示")
+                            .disabled(currentSection != .general && !coordinator.canUseActions)
                     }.padding(14).background(.quaternary)
                 }
-                switch SettingsSection(rawValue: savedSection) ?? .bindings {
+                switch currentSection {
                 case .general: GeneralSettingsView(coordinator: coordinator)
                 case .bindings: BindingsSettingsView(coordinator: coordinator)
                 case .scripts: ScriptsSettingsView(coordinator: coordinator)
                 }
             }
-            .navigationTitle(savedSection)
+            .navigationTitle(currentSection.rawValue)
         }
         .toolbar(removing: .sidebarToggle)
         .onAppear { coordinator.refresh() }
@@ -65,12 +82,17 @@ struct GeneralSettingsView: View {
                 Toggle("暂停动作", isOn: Binding(get: { coordinator.store.document.paused }, set: { coordinator.setPaused($0) }))
             }
             Section("权限与启动") {
-                LabeledContent("辅助功能", value: KeyboardActionProvider.isAuthorized ? "已允许" : "尚未允许")
-                HStack {
-                    Button("授权键盘与媒体控制…") { KeyboardActionProvider.requestAuthorization() }
-                    Button("刷新状态") { coordinator.refresh() }
+                PermissionControls(model: coordinator.permissions)
+                if !coordinator.canUseActions {
+                    Text("未获得辅助功能权限。动作配置和脚本管理可查看，但无法操作；关闭窗口将退出应用。")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
                 Toggle("登录时打开", isOn: Binding(get: { LoginItem.isEnabled }, set: { LoginItem.setEnabled($0); coordinator.objectWillChange.send() }))
+            }
+            if !coordinator.dispatcher.runningTasks.isEmpty {
+                Section("运行中的动作") {
+                    ForEach(coordinator.dispatcher.runningTasks) { ExecutionResultView(execution: $0) }
+                }
             }
             Section("关于") { LabeledContent("智键", value: "首版 · macOS 26"); Text("一个实体按键，连接你的常用操作。").foregroundStyle(.secondary) }
         }.formStyle(.grouped)
@@ -213,7 +235,7 @@ struct BindingsSettingsView: View {
                             }
                             Spacer()
                             if action != nil {
-                                Button("测试") { if let action { coordinator.test(action) } }.disabled(coordinator.testingKeyboard)
+                                Button("测试") { if let action { coordinator.test(action) } }.disabled(coordinator.testingKeyboard || !coordinator.canUseActions)
                             }
                             Button { editing = slot } label: {
                                 Label("选择动作", systemImage: "slider.horizontal.3")
@@ -225,6 +247,7 @@ struct BindingsSettingsView: View {
                             .buttonStyle(.plain)
                             .focusEffectDisabled()
                             .glassEffect(.regular, in: .capsule)
+                            .disabled(!coordinator.canUseActions)
                         }.padding(12)
                     }
                     ZStack(alignment: .topLeading) {
@@ -252,8 +275,11 @@ struct BindingsSettingsView: View {
                     ExecutionResultView(execution: execution)
                 }
             }.padding(28)
+                .disabled(!coordinator.canUseActions)
+                .opacity(coordinator.canUseActions ? 1 : 0.45)
         }
         .sheet(item: $editing) { slot in BindingEditor(coordinator: coordinator, slot: slot) }
+        .onChange(of: coordinator.canUseActions) { _, allowed in if !allowed { editing = nil } }
         .onAppear { longPressText = displayMs(configuration.longPressMs); doubleClickText = displayMs(configuration.doubleClickMs) }
         .onChange(of: configuration.longPressMs) { _, value in if focusedTiming != "longPressMs" { longPressText = displayMs(value) } }
         .onChange(of: configuration.doubleClickMs) { _, value in if focusedTiming != "doubleClickMs" { doubleClickText = displayMs(value) } }
@@ -281,6 +307,7 @@ struct BindingsSettingsView: View {
         }
     }
     private func commitTiming(key: String, text: String, defaultValue: Double, range: ClosedRange<Double>) {
+        guard coordinator.requireActionPermission() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed: Double
         if trimmed.isEmpty {
@@ -300,7 +327,7 @@ struct BindingsSettingsView: View {
 }
 
 @MainActor
-private struct BindingEditor: View {
+struct BindingEditor: View {
     @ObservedObject var coordinator: ActionCoordinator
     let slot: GestureSlot
     @Environment(\.dismiss) private var dismiss
@@ -321,7 +348,11 @@ private struct BindingEditor: View {
             Text("\(slot.title)动作").font(.title2.bold())
             Form {
                 Picker("动作类型", selection: $type) {
-                    Text("无").tag("none"); Text("键盘功能").tag("keyboard"); Text("多媒体功能").tag("media"); Text("执行脚本").tag("script"); Text("执行快捷指令").tag("shortcut")
+                    Text("无").tag("none")
+                    Text("键盘功能").tag("keyboard").disabled(!coordinator.canUseActions)
+                    Text("多媒体功能").tag("media").disabled(!coordinator.canUseActions)
+                    Text("执行脚本").tag("script").disabled(!coordinator.canUseActions)
+                    Text("执行快捷指令").tag("shortcut").disabled(!coordinator.canUseActions)
                 }
                 if type == "keyboard" {
                     TextField("动作名称", text: $name)
@@ -344,10 +375,16 @@ private struct BindingEditor: View {
                     if coordinator.store.document.scripts.isEmpty { Text("先到脚本管理中添加脚本。").foregroundStyle(.secondary) }
                 }
             }
+            .disabled(!coordinator.canUseActions)
             .animation(nil, value: type)
+            if !coordinator.canUseActions {
+                Text(PermissionsModel.actionRestriction).foregroundStyle(.secondary).font(.callout)
+            }
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("保存绑定") { save() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                    .disabled(!coordinator.canUseActions)
+                    .opacity(coordinator.canUseActions ? 1 : 0.45)
             }
         }.padding(26).frame(width: 440)
             .onAppear { load() }
@@ -369,6 +406,7 @@ private struct BindingEditor: View {
         shortcutTimeout = action.parameters["timeout"] ?? "300"
     }
     private func save() {
+        guard coordinator.requireActionPermission() else { return }
         do {
             if type == "none" {
                 try coordinator.store.bind(nil, to: slot); coordinator.refresh(); dismiss(); return

@@ -22,6 +22,7 @@ struct ScriptsSettingsView: View {
                         Text("添加第一个脚本").font(.headline).foregroundStyle(.secondary)
                         Text("拖入 Shell 文件，或新建脚本。").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         Button("导入脚本…") { coordinator.showImportPanel() }
+                            .disabled(!coordinator.canUseActions)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(16)
@@ -34,7 +35,7 @@ struct ScriptsSettingsView: View {
                     }
                     .listStyle(.sidebar)
                     .scrollContentBackground(.hidden)
-                    .onDeleteCommand { pendingDelete = selectedScript }
+                    .onDeleteCommand { if coordinator.canUseActions { pendingDelete = selectedScript } }
                     Text(dropTarget ? "松开以导入" : "拖入文件以添加到脚本库")
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
                 }
@@ -49,8 +50,10 @@ struct ScriptsSettingsView: View {
                 Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .opacity(coordinator.canUseActions ? 1 : 0.5)
         .background(dropTarget ? Color.accentColor.opacity(0.1) : .clear)
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dropTarget) { providers in
+            guard coordinator.requireActionPermission() else { return false }
             guard let first = providers.first else { return false }
             first.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                 let url = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
@@ -63,6 +66,9 @@ struct ScriptsSettingsView: View {
             if let selected, scripts.contains(where: { $0.id == selected }) { return }
             self.selected = scripts.first?.id
         }
+        .onChange(of: coordinator.canUseActions) { _, allowed in
+            if !allowed { pendingDelete = nil; renaming = nil }
+        }
         .confirmationDialog("删除“\(pendingDelete?.name ?? "")”？", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible) {
             Button("解除绑定并删除", role: .destructive) {
                 if let script = pendingDelete {
@@ -72,6 +78,7 @@ struct ScriptsSettingsView: View {
                 }
                 pendingDelete = nil
             }
+            .disabled(!coordinator.canUseActions)
         } message: { Text("相关手势将设为“无”。") }
     }
     private var selectedScript: ScriptRecord? {
@@ -83,6 +90,7 @@ struct ScriptsSettingsView: View {
             Button { selected = coordinator.createScript()?.id } label: { Image(systemName: "plus") }.accessibilityLabel("新建脚本")
             Button { coordinator.showImportPanel() } label: { Image(systemName: "square.and.arrow.down") }.accessibilityLabel("导入脚本")
         }.padding(.horizontal, 16).padding(.vertical, 12)
+            .disabled(!coordinator.canUseActions)
     }
     @ViewBuilder
     private func scriptRow(_ script: ScriptRecord) -> some View {
@@ -99,7 +107,10 @@ struct ScriptsSettingsView: View {
                 Text(script.summary.isEmpty ? "Shell 脚本" : script.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             .padding(.vertical, 5)
-            .simultaneousGesture(TapGesture(count: 2).onEnded { renaming = script.id; renameText = script.name })
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                guard coordinator.canUseActions else { return }
+                renaming = script.id; renameText = script.name
+            })
         }
     }
     private func commitRename(_ script: ScriptRecord) {
@@ -191,6 +202,7 @@ struct ScriptDetailsView: View {
                     ExecutionResultView(execution: execution)
                 }
             }.padding(24)
+                .disabled(!coordinator.canUseActions)
         }
         .frame(minWidth: 310, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { loadPreview() }
@@ -222,6 +234,8 @@ struct ScriptDetailsView: View {
         }
     }
     private func save() {
+        coordinator.permissions.refresh()
+        guard coordinator.canUseActions else { return }
         guard let stored = coordinator.store.document.scripts.first(where: { $0.id == original.id }) else { return }
         // Also reconcile here: disappearing or a pending autosave can precede onChange.
         editor.synchronizeName(with: stored)

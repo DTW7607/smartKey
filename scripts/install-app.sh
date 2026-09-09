@@ -44,6 +44,7 @@ fi
 rm -rf "$STAGE"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 cp "$INFO" "$STAGE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SmartKeyInstallationID string $(uuidgen)" "$STAGE/Contents/Info.plist"
 cp "$BIN" "$STAGE/Contents/MacOS/smartKey"
 chmod +x "$STAGE/Contents/MacOS/smartKey"
 cp "$CONF" "$STAGE/Contents/Resources/smartKey.conf"

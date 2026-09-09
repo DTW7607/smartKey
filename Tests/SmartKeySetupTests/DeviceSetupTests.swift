@@ -45,6 +45,58 @@ private final class FakeBackend: DeviceSetupBackend {
 
 @Suite @MainActor
 struct DeviceSetupTests {
+    @Test func unauthorizedGeneralSettingsReceiveDevicesAndCanChangeAudioMode() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("smartKey-unprivileged-general-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let permissions = PermissionsModel(check: { _ in false })
+        let coordinator = try ActionCoordinator(configuration: RuntimeConfiguration(), directory: directory, permissions: permissions)
+        let backend = FakeBackend()
+        backend.isJackConnected = false
+        let model = DeviceSetupModel(backend: backend, timing: DeviceSetupTiming(choiceTimeout: 0, popupDelay: 0))
+        model.presentationHostForNewFlow = { .settings }
+        coordinator.deviceSetup = model
+        model.onStageChange = { coordinator.deviceConnected = model.stage != .disconnected }
+        coordinator.onChooseAudioDevice = { model.chooseAudioDevice() }
+        coordinator.onChooseSmartKey = { model.chooseSmartKey() }
+        let monitoring = DeviceMonitoringController(start: {
+            model.audioChanged(backend.audio)
+            model.jackChanged(backend.isJackConnected)
+        }, stop: { model.jackChanged(false) })
+        monitoring.update(residentAuthorized: false, settingsVisible: true)
+        #expect(!coordinator.canUseActions)
+        #expect(model.outputs == [speakers, bluetooth])
+        #expect(!coordinator.deviceConnected)
+
+        backend.isJackConnected = true
+        model.jackChanged(true)
+        #expect(coordinator.deviceConnected)
+        #expect(model.presentationHost == .settings)
+        coordinator.onChooseSmartKey?()
+        #expect(model.canEditSettingsOutput)
+        model.selectedUID = bluetooth.uid
+        model.applySettingsOutput()
+        #expect(model.stage == .active)
+        #expect(backend.defaultUID == bluetooth.uid)
+        #expect(!coordinator.canUseActions)
+        coordinator.onChooseAudioDevice?()
+        #expect(model.stage == .audioDevice)
+        #expect(backend.defaultUID == headphones.uid)
+
+        backend.devices = [headphones, speakers]
+        model.audioChanged(backend.audio)
+        #expect(model.outputs == [speakers])
+        monitoring.update(residentAuthorized: false, settingsVisible: false)
+        #expect(!coordinator.deviceConnected)
+        #expect(backend.remoteRequests.last == false)
+        #expect(backend.guardRequests.last == false)
+        monitoring.update(residentAuthorized: false, settingsVisible: true)
+        #expect(coordinator.deviceConnected)
+        #expect(model.outputs == [speakers])
+        coordinator.setPaused(true)
+        #expect(coordinator.store.document.paused)
+        coordinator.setPaused(false)
+        #expect(!coordinator.store.document.paused)
+    }
     @Test func popupFlowKeepsItsHostWhenSettingsOpens() {
         let backend = FakeBackend()
         let model = DeviceSetupModel(backend: backend)
@@ -898,7 +950,8 @@ struct DeviceSetupTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("smartKey-inline-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = RuntimeConfiguration()
-        let coordinator = try ActionCoordinator(configuration: configuration, directory: directory)
+        let coordinator = try ActionCoordinator(configuration: configuration, directory: directory,
+                                               permissions: PermissionsModel(check: { _ in false }))
         coordinator.deviceConnected = true
         coordinator.deviceStatus = "智键"
         let backend = FakeBackend()
@@ -909,6 +962,9 @@ struct DeviceSetupTests {
         coordinator.onChooseSmartKey = { model.chooseSmartKey() }
         model.jackChanged(true)
         model.chooseSmartKey()
+        #expect(!coordinator.canUseActions)
+        #expect(model.presentationHost == .settings)
+        #expect(model.canEditSettingsOutput)
         let view = NSHostingView(rootView: GeneralSettingsView(coordinator: coordinator))
         view.sizingOptions = []
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 700),
