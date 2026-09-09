@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import SmartKeyActions
 @testable import SmartKey
 @testable import smartKeyPopup
 
@@ -44,6 +45,193 @@ private final class FakeBackend: DeviceSetupBackend {
 
 @Suite @MainActor
 struct DeviceSetupTests {
+    @Test func popupFlowKeepsItsHostWhenSettingsOpens() {
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        var host = DeviceSetupModel.PresentationHost.popup
+        model.presentationHostForNewFlow = { host }
+        model.jackChanged(true)
+        host = .settings
+        model.chooseSmartKey()
+        #expect(model.presentationHost == .popup)
+        #expect(model.hasAutomaticOutputChoice)
+        model.settingsDidHide()
+        #expect(backend.writes.isEmpty)
+        #expect(model.stage == .choosingOutput)
+        model.applyOutput()
+        #expect(model.presentationHost == nil)
+        model.chooseSmartKey()
+        #expect(model.presentationHost == .settings)
+    }
+
+    @Test func hidingSettingsExpiresChoicesWithoutMovingTheFlowOrRetryingErrors() {
+        let backend = FakeBackend()
+        backend.applyImmediately = false
+        var clock: TimeInterval = 0
+        var host = DeviceSetupModel.PresentationHost.settings
+        let model = DeviceSetupModel(backend: backend, now: { clock })
+        model.presentationHostForNewFlow = { host }
+        model.jackChanged(true)
+        host = .popup
+        model.settingsDidHide()
+        #expect(model.stage == .applying)
+        #expect(model.presentationHost == .settings)
+        #expect(backend.writes == [speakers.uid])
+        clock = 100
+        model.tick()
+        #expect(model.stage == .choosingOutput)
+        #expect(model.error != nil)
+        model.tick()
+        model.settingsDidShow()
+        model.tick()
+        #expect(backend.writes == [speakers.uid])
+        #expect(model.presentationHost == .settings)
+        model.cancel()
+        model.jackChanged(false)
+        model.jackChanged(true)
+        #expect(model.presentationHost == .popup)
+    }
+
+    @Test(arguments: [DeviceSetupModel.PresentationHost.popup, .settings])
+    func outputGetsFullChoiceTimeoutAndUsesFirstNotPreselection(host: DeviceSetupModel.PresentationHost) {
+        let backend = FakeBackend()
+        backend.defaultUID = bluetooth.uid
+        var clock: TimeInterval = 0
+        let model = DeviceSetupModel(backend: backend, timing: DeviceSetupTiming(choiceTimeout: 5), now: { clock })
+        model.presentationHostForNewFlow = { host }
+        model.jackChanged(true)
+        clock = 5
+        model.tick()
+        #expect(model.stage == .choosingOutput)
+        #expect(model.selectedUID == bluetooth.uid)
+        #expect(model.remainingSeconds == 5)
+        clock = 9.2
+        model.tick()
+        #expect(model.remainingSeconds == 1)
+        #expect(backend.writes.isEmpty)
+        clock = 10
+        model.tick()
+        #expect(backend.writes == [speakers.uid])
+        #expect(model.stage == .active)
+    }
+
+    @Test func hidingSettingsUsesPreferredTypeEvenWithTimerDisabled() {
+        let backend = FakeBackend()
+        backend.defaultUID = speakers.uid
+        let model = DeviceSetupModel(backend: backend, timing: DeviceSetupTiming(choiceTimeout: 0, popupDelay: 1),
+                                     choiceStore: MemoryChoiceStore(.audioDevice))
+        model.presentationHostForNewFlow = { .settings }
+        model.jackChanged(true)
+        model.settingsDidHide()
+        #expect(!model.isWaitingToPresent)
+        #expect(backend.writes == [headphones.uid])
+        #expect(model.stage == .audioDevice)
+    }
+
+    @Test func hidingSettingsExpiresOutputChoiceAndWaitsSafelyForEmptyList() {
+        for empty in [false, true] {
+            let backend = FakeBackend()
+            if empty { backend.devices = [headphones] }
+            let model = DeviceSetupModel(backend: backend)
+            model.presentationHostForNewFlow = { .settings }
+            model.jackChanged(true)
+            model.chooseSmartKey()
+            model.selectedUID = bluetooth.uid
+            model.settingsDidHide()
+            if empty {
+                #expect(model.stage == .choosingOutput)
+                #expect(backend.writes.isEmpty)
+                backend.devices = [headphones, speakers, bluetooth]
+                model.audioChanged(backend.audio)
+                model.tick()
+            }
+            #expect(backend.writes == [speakers.uid])
+            #expect(model.stage == .active)
+        }
+    }
+
+    @Test func outputTimeoutUsesFreshListAndEmptyListWaits() {
+        let backend = FakeBackend()
+        var clock: TimeInterval = 0
+        let model = DeviceSetupModel(backend: backend, now: { clock })
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        backend.devices = [headphones]
+        clock = 10
+        model.tick()
+        #expect(!model.hasAutomaticOutputChoice)
+        #expect(backend.writes.isEmpty)
+        backend.devices = [headphones, bluetooth, speakers]
+        clock = 20
+        model.audioChanged(backend.audio)
+        model.tick()
+        #expect(model.remainingSeconds == 10)
+        backend.devices = [headphones, speakers]
+        clock = 30
+        model.tick()
+        #expect(backend.writes == [speakers.uid])
+    }
+
+    @Test func outputTimeoutStopsOnCancelUnplugFailureOrDisabledTimeout() {
+        for stop in ["cancel", "unplug", "failure", "disabled"] {
+            let backend = FakeBackend()
+            var clock: TimeInterval = 0
+            let model = DeviceSetupModel(backend: backend,
+                timing: DeviceSetupTiming(choiceTimeout: stop == "disabled" ? 0 : 10), now: { clock })
+            model.jackChanged(true)
+            model.chooseSmartKey()
+            if stop == "cancel" { model.cancel() }
+            if stop == "unplug" { backend.isJackConnected = false }
+            if stop == "failure" { backend.throwOnWrite = true }
+            clock = 10
+            model.tick()
+            clock = 100
+            model.tick()
+            #expect(backend.writes.count == (stop == "failure" ? 1 : 0))
+            #expect(!model.hasAutomaticOutputChoice)
+        }
+    }
+
+    @Test func setupFramesFitSmallAndOffsetScreens() {
+        let settings = RuntimeSettings()
+        let choice = SetupPanelLayout.preferredSize(settings, stage: .choosingType)
+        let output = SetupPanelLayout.preferredSize(settings, stage: .choosingOutput)
+        #expect(choice.width == output.width)
+        #expect(choice.height < output.height)
+        for screen in [CGRect(x: 0, y: 40, width: 1440, height: 835),
+                       CGRect(x: -1920, y: -300, width: 1920, height: 1050),
+                       CGRect(x: 1440, y: 100, width: 320, height: 240)] {
+            for margin: CGFloat in [0, 18, 10000] {
+                let frame = SetupPanelLayout.frame(size: SetupPanelLayout.preferredSize(settings),
+                                                   visibleFrame: screen, margin: margin)
+                #expect(screen.contains(frame))
+                #expect(frame.width > 0 && frame.height > 0)
+            }
+        }
+    }
+
+    @Test func setupResizeCanBeInterruptedWithoutMovingTheBottomEdge() {
+        _ = NSApplication.shared
+        let small = CGRect(x: -10000, y: -10000, width: 504, height: 220)
+        let large = CGRect(x: -10000, y: -10000, width: 504, height: 392)
+        let panel = PopupPanel(contentRect: small, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        let resizer = SetupPanelResizer(panel: panel)
+        resizer.resize(to: large, animated: true)
+        #expect(resizer.isAnimating)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        #expect(panel.frame.origin == small.origin)
+        #expect(panel.frame.width == small.width)
+        #expect(panel.frame.height > small.height && panel.frame.height < large.height)
+        resizer.stop()
+        let stopped = panel.frame
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        #expect(panel.frame == stopped)
+        resizer.resize(to: large, animated: false)
+        #expect(panel.frame == large)
+        #expect(!resizer.isAnimating)
+    }
+
     @Test func startupAndTimeoutOnlyChooseType() {
         let backend = FakeBackend()
         var clock: TimeInterval = 100
@@ -645,19 +833,23 @@ struct DeviceSetupTests {
         let backend = FakeBackend()
         let model = DeviceSetupModel(backend: backend)
         model.jackChanged(true)
+        let view = NSHostingView(rootView: DeviceSetupView(model: model))
+        view.sizingOptions = []
+        let frame = NSRect(origin: NSPoint(x: -10000, y: -10000), size: SetupPanelLayout.preferredSize(RuntimeSettings(), stage: .choosingType))
+        let window = PopupPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        let resizer = SetupPanelResizer(panel: window)
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
         for name in ["device-type", "audio-output", "audio-output-dark", "audio-error"] {
             if name == "audio-output" { model.chooseSmartKey() }
             if name == "audio-error" { backend.throwOnWrite = true; model.applyOutput() }
-            let view = NSHostingView(rootView: DeviceSetupView(model: model))
-            let window = PopupPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
+            let target = NSRect(origin: frame.origin, size: SetupPanelLayout.preferredSize(RuntimeSettings(), stage: model.stage,
+                                                                                          automaticallySelectingOutput: model.automaticallySelectingOutput))
+            resizer.resize(to: target, animated: name == "audio-output")
             window.appearance = NSAppearance(named: name.hasSuffix("-dark") ? .darkAqua : .aqua)
-            window.contentView = view
-            window.setContentSize(view.fittingSize)
-            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
-            window.orderFrontRegardless()
-            defer { window.orderOut(nil) }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.32))
             view.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             func inspect(_ node: NSView) {
@@ -665,7 +857,8 @@ struct DeviceSetupTests {
                     #expect(table.numberOfRows == backend.devices.filter { !$0.isAnalogJack }.count)
                     #expect(table.selectedRow == 0)
                     #expect(table.delegate?.tableView?(table, shouldSelectRow: 0) == true)
-                    #expect(table.frame.width > 400)
+                    #expect(table.frame.width > 300)
+                    #expect(table.frame.width < view.bounds.width)
                 }
                 node.subviews.forEach(inspect)
             }
@@ -674,7 +867,81 @@ struct DeviceSetupTests {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             let data = try #require(bitmap.representation(using: .png, properties: [:]))
             try data.write(to: URL(fileURLWithPath: "/tmp/smartKey-\(name).png"))
-            #expect(view.fittingSize.width >= 400)
+            #expect(window.frame == target)
+            #expect(window.frame.origin == frame.origin)
+            #expect(window.frame.width == frame.width)
+        }
+    }
+
+    @Test func settingsCanChangeActiveOutputWithoutReopeningTypeChoice() {
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        model.presentationHostForNewFlow = { .settings }
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        model.applySettingsOutput()
+        #expect(model.stage == .active)
+        model.selectedUID = bluetooth.uid
+        #expect(model.canEditSettingsOutput)
+        model.applySettingsOutput()
+        #expect(model.stage == .active)
+        #expect(backend.writes == [speakers.uid, bluetooth.uid])
+        model.chooseAudioDevice()
+        #expect(!model.canEditSettingsOutput)
+        let writes = backend.writes
+        model.applySettingsOutput()
+        #expect(backend.writes == writes)
+    }
+
+    @Test func renderInlineAudioSetup() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("smartKey-inline-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = RuntimeConfiguration()
+        let coordinator = try ActionCoordinator(configuration: configuration, directory: directory)
+        coordinator.deviceConnected = true
+        coordinator.deviceStatus = "智键"
+        let backend = FakeBackend()
+        let model = DeviceSetupModel(backend: backend)
+        model.presentationHostForNewFlow = { .settings }
+        coordinator.deviceSetup = model
+        coordinator.onChooseAudioDevice = { model.chooseAudioDevice() }
+        coordinator.onChooseSmartKey = { model.chooseSmartKey() }
+        model.jackChanged(true)
+        model.chooseSmartKey()
+        let view = NSHostingView(rootView: GeneralSettingsView(coordinator: coordinator))
+        view.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 700),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        view.layoutSubtreeIfNeeded()
+        var tables: [NSTableView] = []
+        func inspect(_ node: NSView) {
+            if let table = node as? NSTableView { tables.append(table) }
+            node.subviews.forEach(inspect)
+        }
+        inspect(view)
+        #expect(tables.count == 1)
+        #expect(tables.first?.numberOfRows == 2)
+        #expect(model.hasAutomaticOutputChoice)
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let data = try #require(bitmap.representation(using: .png, properties: [:]))
+        try data.write(to: URL(fileURLWithPath: "/tmp/smartKey-inline-audio.png"))
+        for state in ["active", "audio", "disconnected"] {
+            if state == "active" { model.applySettingsOutput() }
+            if state == "audio" { model.chooseAudioDevice() }
+            if state == "disconnected" { backend.isJackConnected = false; model.jackChanged(false) }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            view.layoutSubtreeIfNeeded()
+            tables.removeAll()
+            inspect(view)
+            #expect(tables.count == 1)
+            #expect(model.canEditSettingsOutput == (state == "active"))
         }
     }
 }

@@ -25,27 +25,54 @@ struct DeviceSetupView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                if model.stage != .choosingType {
-                    Image(systemName: audioMode ? "headphones" : "button.programmable")
-                        .font(.system(size: 25, weight: .medium))
+        VStack(spacing: 0) {
+            header
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.top, 22)
+            ScrollView {
+                content
+            }
+            .defaultScrollAnchor(.top)
+            .id("\(model.stage):\(model.error ?? "")")
+            if model.stage != .choosingType {
+                controls
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 22)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: configuration.setupCornerRadiusPt))
+        .overlay(RoundedRectangle(cornerRadius: configuration.setupCornerRadiusPt)
+            .strokeBorder(.primary.opacity(0.12)))
+        .padding(12)
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            if model.stage != .choosingType {
+                Image(systemName: audioMode ? "headphones" : "button.programmable")
+                    .font(.system(size: 25, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.system(size: 16, weight: .semibold))
+                if model.stage == .choosingType || choosingOutput {
+                    Text(model.stage == .choosingType
+                         ? "请选择插入 3.5 mm 端口的设备类型。"
+                         : "请选择其他设备播放声音。")
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                        .frame(width: 38)
-                }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(title).font(.system(size: 16, weight: .semibold))
-                    if model.stage == .choosingType || choosingOutput {
-                        Text(model.stage == .choosingType
-                             ? "请选择插入 3.5 mm 端口的设备类型。"
-                             : "请选择其他设备播放声音。")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+    }
 
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 18) {
             if model.stage == .choosingType {
                 HStack(spacing: 12) {
                     typeChoice(.audioDevice, title: "音频设备",
@@ -55,6 +82,11 @@ struct DeviceSetupView: View {
                 }
             } else {
                 if choosingOutput {
+                    if model.hasAutomaticOutputChoice, let first = model.outputs.first {
+                        Text("\(model.remainingSeconds) 秒后自动使用第一项：\(first.name)")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                     AudioDeviceTable(devices: model.outputs, selection: $model.selectedUID)
                         .frame(height: configuration.setupTableHeightPt)
                         .clipShape(RoundedRectangle(cornerRadius: 9))
@@ -71,39 +103,34 @@ struct DeviceSetupView: View {
                     Text("暂无其他音频设备。请连接蓝牙或 USB 音频设备后再选择。")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-
-                HStack {
-                    if [.applying, .applyingAudio, .activating].contains(model.stage) {
-                        ProgressView().controlSize(.small)
-                        Text(model.stage == .activating ? "等待线控设备…" : "正在切换音频输出…")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("取消", action: model.cancel).keyboardShortcut(.cancelAction)
-                    if choosingOutput {
-                        Button("使用此设备", action: model.applyOutput)
-                            .keyboardShortcut(.defaultAction)
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!model.canApply)
-                    } else if model.stage == .audioError {
-                        Button("重试", action: model.chooseAudioDevice)
-                            .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
-                    } else if model.stage == .remoteError || model.error != nil {
-                        Button("重试", action: model.retryRemote)
-                            .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
-                    }
-                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(22)
-        .frame(width: choosingOutput ? configuration.setupOutputWidthPt : configuration.setupChoiceWidthPt)
-        // A system window surface matches native controls and stays stable during
-        // Spaces transitions; no desktop-dependent material fallback is involved.
-        .background(Color(nsColor: .windowBackgroundColor),
-                    in: RoundedRectangle(cornerRadius: configuration.setupCornerRadiusPt))
-        .overlay(RoundedRectangle(cornerRadius: configuration.setupCornerRadiusPt)
-            .strokeBorder(.primary.opacity(0.12)))
-        .padding(12)
+    }
+
+    private var controls: some View {
+        HStack {
+            if [.applying, .applyingAudio, .activating].contains(model.stage) {
+                ProgressView().controlSize(.small)
+                Text(model.stage == .activating ? "等待线控设备…" : "正在切换音频输出…")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("取消", action: model.cancel).keyboardShortcut(.cancelAction)
+            if choosingOutput {
+                Button("使用此设备", action: model.applyOutput)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canApply)
+            } else if model.stage == .audioError {
+                Button("重试", action: model.chooseAudioDevice)
+                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+            } else if model.stage == .remoteError || model.error != nil {
+                Button("重试", action: model.retryRemote)
+                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+            }
+        }
     }
 
     private func typeChoice(_ choice: DeviceTypeChoice, title: String,
@@ -155,7 +182,7 @@ struct DeviceSetupView: View {
 
 /// Use AppKit's actual system table for column headers, alternating rows,
 /// keyboard selection, and the active/inactive selection colors in the reference.
-private struct AudioDeviceTable: NSViewRepresentable {
+struct AudioDeviceTable: NSViewRepresentable {
     let devices: [SmartKeyAudioDevice]
     @Binding var selection: String?
 
@@ -169,10 +196,11 @@ private struct AudioDeviceTable: NSViewRepresentable {
         name.width = 278
         let type = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("type"))
         type.title = "类型"
-        type.width = 142
+        type.width = 100
+        type.minWidth = 80
         table.addTableColumn(name)
         table.addTableColumn(type)
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.usesAlternatingRowBackgroundColors = true
         table.style = .plain
         table.rowHeight = 30

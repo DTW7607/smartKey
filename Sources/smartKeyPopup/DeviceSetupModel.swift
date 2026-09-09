@@ -16,6 +16,8 @@ extension SmartKeyService: DeviceSetupBackend {}
 
 @MainActor
 final class DeviceSetupModel: ObservableObject {
+    enum PresentationHost { case popup, settings }
+
     enum Stage: Equatable {
         case disconnected, choosingType, audioDevice, choosingOutput, applying, applyingAudio
         case activating, active, audioError, remoteError, paused
@@ -29,6 +31,9 @@ final class DeviceSetupModel: ObservableObject {
     @Published private(set) var automaticallySelectingOutput = false
     @Published private(set) var preferredChoice: DeviceTypeChoice
     @Published private(set) var isWaitingToPresent = false
+    @Published private(set) var presentationHost: PresentationHost?
+    /// Sampled once per flow. Opening/closing settings never moves an existing flow.
+    var presentationHostForNewFlow: () -> PresentationHost = { .popup }
     var timing: DeviceSetupTiming
     var onInsertion: (() -> Void)?
     var onStageChange: (() -> Void)?
@@ -42,6 +47,8 @@ final class DeviceSetupModel: ObservableObject {
     private var requestedUID: String?
     private var smartKeyWanted = false
     private var presentationDeadline: TimeInterval?
+    private var outputChoiceCountdownEnabled = false
+    private var settingsFlowHidden = false
 
     init(backend: DeviceSetupBackend,
          timing: DeviceSetupTiming = DeviceSetupTiming(),
@@ -62,6 +69,43 @@ final class DeviceSetupModel: ObservableObject {
     var canApply: Bool { stage == .choosingOutput && outputs.contains { $0.uid == selectedUID } }
     var acceptsButtons: Bool { stage == .active && backend.seizeStatus == .seized }
     var hasAutomaticChoice: Bool { stage == .choosingType && deadline != nil }
+    var hasAutomaticOutputChoice: Bool { stage == .choosingOutput && deadline != nil }
+    var canEditSettingsOutput: Bool {
+        connected && presentationHost != .popup && (stage == .choosingOutput || stage == .active)
+    }
+
+    func applySettingsOutput() {
+        guard canEditSettingsOutput, let uid = selectedUID,
+              outputs.contains(where: { $0.uid == uid }) else { return }
+        if stage == .active {
+            presentationHost = .settings
+            transition(.choosingOutput)
+        }
+        applyOutput()
+    }
+
+    func settingsDidHide() {
+        guard presentationHost == .settings else { return }
+        settingsFlowHidden = true
+        resolveHiddenChoices()
+    }
+
+    func settingsDidShow() { settingsFlowHidden = false }
+
+    private func resolveHiddenChoices() {
+        guard settingsFlowHidden, presentationHost == .settings else { return }
+        if stage == .choosingType { choosePreferredDevice() }
+        if stage == .choosingOutput && error == nil && !outputs.isEmpty { expireOutputChoice() }
+    }
+
+    private func expireOutputChoice() {
+        guard backend.isJackConnected else { jackChanged(false); return }
+        updateDevices(backend.audio)
+        if let first = outputs.first {
+            selectedUID = first.uid
+            applyOutput()
+        }
+    }
 
     func jackChanged(_ inserted: Bool) {
         if !inserted { rememberCurrentOutput(backend.audio) }
@@ -133,6 +177,7 @@ final class DeviceSetupModel: ObservableObject {
         } else {
             // With several choices, history is only a preselection.
             transition(.choosingOutput)
+            startOutputChoiceCountdown()
         }
     }
 
@@ -207,6 +252,7 @@ final class DeviceSetupModel: ObservableObject {
         automaticallySelectingOutput = false
         error = "上次使用的音频设备已不可用，请重新选择。"
         transition(.choosingOutput)
+        startOutputChoiceCountdown()
     }
 
     private func activateRemote() {
@@ -252,6 +298,7 @@ final class DeviceSetupModel: ObservableObject {
     }
 
     func tick() {
+        resolveHiddenChoices()
         if isWaitingToPresent {
             guard let presentationDeadline, now() >= presentationDeadline else { return }
             guard backend.isJackConnected else { jackChanged(false); return }
@@ -262,6 +309,14 @@ final class DeviceSetupModel: ObservableObject {
         if stage == .choosingType, let deadline {
             remainingSeconds = max(0, Int(ceil(deadline - now())))
             if now() >= deadline { choosePreferredDevice() }
+        } else if stage == .choosingOutput {
+            if let deadline {
+                remainingSeconds = max(0, Int(ceil(deadline - now())))
+                if now() >= deadline {
+                    // Re-read only at expiry; regular list updates arrive via HAL.
+                    expireOutputChoice()
+                }
+            }
         } else if stage == .applying || stage == .applyingAudio || stage == .activating {
             audioChanged(backend.audio)
             if stage == .activating { seizeChanged(backend.seizeStatus) }
@@ -301,6 +356,12 @@ final class DeviceSetupModel: ObservableObject {
         deadline = timing.choiceTimeout > 0 ? now() + timing.choiceTimeout : nil
     }
 
+    private func startOutputChoiceCountdown() {
+        outputChoiceCountdownEnabled = timing.choiceTimeout > 0
+        deadline = nil
+        if outputChoiceCountdownEnabled && !outputs.isEmpty { startChoiceCountdown() }
+    }
+
     private func cancelPendingPresentation() {
         presentationDeadline = nil
         isWaitingToPresent = false
@@ -313,7 +374,12 @@ final class DeviceSetupModel: ObservableObject {
     }
 
     private func updateDevices(_ snapshot: SmartKeyAudioSnapshot) {
-        outputs = snapshot.outputs.filter { !$0.isAnalogJack }
+        let next = snapshot.outputs.filter { !$0.isAnalogJack }
+        if outputs != next { outputs = next }
+        if stage == .choosingOutput && outputChoiceCountdownEnabled {
+            if outputs.isEmpty { deadline = nil }
+            else if deadline == nil { startChoiceCountdown() }
+        }
         if !outputs.contains(where: { $0.uid == selectedUID }) {
             selectedUID = outputs.first { $0.uid == snapshot.defaultOutputUID }?.uid
                 ?? outputs.first { $0.uid == rememberedOutputUID }?.uid
@@ -337,6 +403,14 @@ final class DeviceSetupModel: ObservableObject {
 
     private func transition(_ next: Stage) {
         guard stage != next else { return }
+        if next != .choosingOutput { outputChoiceCountdownEnabled = false }
+        switch next {
+        case .disconnected, .audioDevice, .active, .paused:
+            presentationHost = nil
+            settingsFlowHidden = false
+        default:
+            if presentationHost == nil { presentationHost = presentationHostForNewFlow() }
+        }
         stage = next
         onStageChange?()
     }

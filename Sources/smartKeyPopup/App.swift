@@ -53,8 +53,8 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
     private lazy var setup = DeviceSetupModel(backend: service, timing: mask.setupTiming,
                                               choiceStore: DeviceChoiceStore())
     private var setupPanel: PopupPanel!
+    private var setupResizer: SetupPanelResizer!
     private var setupTimer: Timer?
-    private var settingsOpen = false
     private var insertionReleaseWork: DispatchWorkItem?
     private var insertionFinishWork: DispatchWorkItem?
 
@@ -78,7 +78,10 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         setupPanel.allowsKey = true
         setupPanel.ignoresMouseEvents = false
         setupPanel.level = .floating
-        setupPanel.contentView = TransparentHostingView(rootView: DeviceSetupView(model: setup, configuration: mask))
+        let setupContent = TransparentHostingView(rootView: DeviceSetupView(model: setup, configuration: mask))
+        setupContent.sizingOptions = []
+        setupPanel.contentView = setupContent
+        setupResizer = SetupPanelResizer(panel: setupPanel)
         maskCancellable = mask.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.layout()
@@ -144,9 +147,16 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
             let directory = AppRunMode.preview ? AppRunMode.previewDirectory : RuntimeConfiguration.userFile().deletingLastPathComponent()
             let actions = try ActionCoordinator(configuration: mask, directory: directory)
             self.actions = actions
+            if !AppRunMode.preview { actions.deviceSetup = setup }
             settingsWindow = SettingsWindowController(coordinator: actions)
-            settingsWindow?.onOpen = { [weak self] in self?.settingsOpen = true; self?.layoutSetup() }
-            settingsWindow?.onClose = { [weak self] in self?.settingsOpen = false; self?.layoutSetup() }
+            settingsWindow?.onOpen = { [weak self] in self?.setup.settingsDidShow() }
+            settingsWindow?.onClose = { [weak self] in self?.setup.settingsDidHide() }
+            settingsWindow?.onMinimize = { [weak self] in self?.setup.settingsDidHide() }
+            setup.presentationHostForNewFlow = { [weak self] in
+                guard let window = self?.settingsWindow?.window,
+                      window.isVisible, !window.isMiniaturized else { return .popup }
+                return .settings
+            }
             if !AppRunMode.preview {
                 actions.onChooseAudioDevice = { [weak self] in
                     self?.setup.chooseAudioDevice(); self?.layoutSetup(); self?.refreshMenu()
@@ -177,7 +187,7 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         }
         setup.onInsertion = { [weak self] in
             self?.animateInsertion()
-            if self?.settingsOpen == true {
+            if self?.setup.presentationHost == .settings {
                 UserDefaults.standard.set(SettingsSection.general.rawValue, forKey: "smartKey.settings.section")
             }
         }
@@ -408,27 +418,25 @@ final class PopupDelegate: NSObject, NSApplicationDelegate {
         )
         maskPanel.contentView?.layer?.contentsScale = target.backingScaleFactor
         maskPanel.orderFrontRegardless()
-        layoutSetup()
+        layoutSetup(animate: false)
     }
 
-    private func layoutSetup() {
+    private func layoutSetup(animate: Bool = true) {
         guard setupPanel != nil else { return }
-        if settingsOpen || !setup.isPresented {
+        if setup.presentationHost != .popup || !setup.isPresented {
+            setupResizer.stop()
             setupPanel.orderOut(nil)
             return
         }
-        // Layout on the next main-loop turn so SwiftUI has consumed the new stage.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.setup.isPresented, let target = self.currentScreen() else { return }
-            let size = self.setupPanel.contentView?.fittingSize ?? NSSize(width: 504, height: 360)
-            let visibleFrame = target.visibleFrame
-            self.setupPanel.setFrame(NSRect(
-                x: max(visibleFrame.minX, visibleFrame.maxX - size.width - self.mask.setupScreenMarginPt),
-                y: visibleFrame.minY + self.mask.setupScreenMarginPt,
-                width: size.width, height: size.height
-            ), display: true)
-            self.setupPanel.orderFrontRegardless()
-        }
+        guard let target = currentScreen() else { return }
+        let size = SetupPanelLayout.preferredSize(mask.values, stage: setup.stage,
+                                                 automaticallySelectingOutput: setup.automaticallySelectingOutput)
+        let frame = SetupPanelLayout.frame(size: size,
+                                          visibleFrame: target.visibleFrame, margin: mask.setupScreenMarginPt)
+        let animated = animate && setupPanel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && setupPanel.frame.origin == frame.origin && setupPanel.frame.width == frame.width
+        setupResizer.resize(to: frame, animated: animated)
+        setupPanel.orderFrontRegardless()
     }
 
     private func animateInsertion() {

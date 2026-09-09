@@ -57,12 +57,11 @@ struct GeneralSettingsView: View {
         Form {
             Section("设备") {
                 LabeledContent("连接状态", value: coordinator.deviceStatus)
-                HStack(spacing: 12) {
-                    deviceModeCard("音频设备", symbol: "headphones", choice: .audioDevice,
-                                   action: { coordinator.onChooseAudioDevice?() })
-                    deviceModeCard("智键", symbol: "button.programmable", choice: .smartKey,
-                                   action: { coordinator.onChooseSmartKey?() })
-                }.padding(.vertical, 4)
+                if let model = coordinator.deviceSetup {
+                    SettingsDeviceSetupView(coordinator: coordinator, model: model, configuration: coordinator.configuration)
+                } else {
+                    DeviceModeControls(coordinator: coordinator)
+                }
                 Toggle("暂停动作", isOn: Binding(get: { coordinator.store.document.paused }, set: { coordinator.setPaused($0) }))
             }
             Section("权限与启动") {
@@ -76,6 +75,81 @@ struct GeneralSettingsView: View {
             Section("关于") { LabeledContent("智键", value: "首版 · macOS 26"); Text("一个实体按键，连接你的常用操作。").foregroundStyle(.secondary) }
         }.formStyle(.grouped)
     }
+}
+
+@MainActor
+struct SettingsDeviceSetupView: View {
+    @ObservedObject var coordinator: ActionCoordinator
+    @ObservedObject var model: DeviceSetupModel
+    @ObservedObject var configuration: RuntimeConfiguration
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DeviceModeControls(coordinator: coordinator, allowsInteraction: model.presentationHost != .popup)
+            Divider()
+            Text("智键音频输出").font(.headline)
+            Text("请选择其他设备播放声音。").font(.caption).foregroundStyle(.secondary)
+            AudioDeviceTable(devices: model.outputs, selection: $model.selectedUID)
+                .frame(height: configuration.setupTableHeightPt)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.primary.opacity(0.12)))
+                .disabled(!model.canEditSettingsOutput)
+
+            if model.presentationHost == .popup {
+                Label("请在设备选择窗口中完成设置。", systemImage: "macwindow")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                if model.hasAutomaticOutputChoice, let first = model.outputs.first {
+                    Text("\(model.remainingSeconds) 秒后自动使用第一项：\(first.name)")
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+                if let error = model.error {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                } else if model.outputs.isEmpty {
+                    Text("暂无其他音频设备，请连接蓝牙或 USB 音频设备。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !model.canEditSettingsOutput && !model.isPresented {
+                    Text("连接智键并选择智键模式后，可在这里设置音频输出。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if [.applying, .applyingAudio, .activating].contains(model.stage) {
+                        ProgressView().controlSize(.small)
+                        Text(model.stage == .activating ? "等待线控设备…" : "正在切换音频输出…")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.isPresented {
+                        Button("取消", action: model.cancel)
+                    }
+                    if model.stage == .audioError {
+                        Button("重试", action: model.chooseAudioDevice)
+                    } else if model.stage == .remoteError {
+                        Button("重试", action: model.retryRemote)
+                    }
+                    Button("使用此设备", action: model.applySettingsOutput)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canEditSettingsOutput || !model.outputs.contains { $0.uid == model.selectedUID })
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+private struct DeviceModeControls: View {
+    @ObservedObject var coordinator: ActionCoordinator
+    var allowsInteraction = true
+
+    var body: some View {
+        HStack(spacing: 12) {
+            deviceModeCard("音频设备", symbol: "headphones", choice: .audioDevice,
+                           action: { coordinator.onChooseAudioDevice?() })
+            deviceModeCard("智键", symbol: "button.programmable", choice: .smartKey,
+                           action: { coordinator.onChooseSmartKey?() })
+        }.padding(.vertical, 4)
+    }
+
     private func isSelected(_ choice: DeviceTypeChoice) -> Bool {
         if coordinator.hasAutomaticChoice { return coordinator.preferredChoice == choice }
         switch choice {
@@ -85,7 +159,7 @@ struct GeneralSettingsView: View {
     }
     private func deviceModeCard(_ title: String, symbol: String, choice: DeviceTypeChoice, action: @escaping () -> Void) -> some View {
         let selected = isSelected(choice)
-        let enabled = coordinator.deviceConnected && (choice == .audioDevice ? coordinator.onChooseAudioDevice : coordinator.onChooseSmartKey) != nil
+        let enabled = allowsInteraction && coordinator.deviceConnected && (choice == .audioDevice ? coordinator.onChooseAudioDevice : coordinator.onChooseSmartKey) != nil
         return VStack(spacing: 7) {
             Image(systemName: symbol).font(.system(size: 23))
             Text(title).font(.system(size: 14, weight: .semibold))

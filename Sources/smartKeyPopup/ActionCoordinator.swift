@@ -9,6 +9,7 @@ final class ActionCoordinator: ObservableObject {
     let library: ScriptLibrary
     let dispatcher: ActionDispatcher
     let configuration: RuntimeConfiguration
+    var deviceSetup: DeviceSetupModel?
     @Published var notice: String?
     @Published var deviceStatus = "等待连接"
     @Published var deviceConnected = false

@@ -21,6 +21,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { nil }
     var onOpen: (() -> Void)?
     var onClose: (() -> Void)?
+    var onMinimize: (() -> Void)?
     func open() {
         coordinator.refresh()
         NSApp.activate(ignoringOtherApps: true)
@@ -34,6 +35,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
     func windowDidUpdate(_ notification: Notification) { hideSidebarToggle() }
     func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowDidMiniaturize(_ notification: Notification) { onMinimize?() }
+    func windowDidDeminiaturize(_ notification: Notification) { onOpen?() }
 
     private func hideSidebarToggle() {
         guard let toolbar = window?.toolbar else { return }
